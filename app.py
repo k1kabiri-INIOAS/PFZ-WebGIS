@@ -114,65 +114,99 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
     center_lat = (st.session_state.miny + st.session_state.maxy) / 2
     center_lon = (st.session_state.minx + st.session_state.maxx) / 2
     
-    # استفاده از OpenStreetMap به جای CartoDB برای جلوگیری از خطای API Key
+    # ساخت نقشه پایه
     m = folium.Map(
         location=[center_lat, center_lon], 
         zoom_start=6, 
         tiles="OpenStreetMap"
     )
     
-    # 1. Add region boundary polygon
+    # 1. افزودن محدوده مطالعاتی (Region Boundary)
     folium.GeoJson(
         st.session_state.gdf,
         name="Region Boundary",
-        style_function=lambda x: {'color': 'blue', 'fillColor': 'transparent', 'weight': 1.5}
+        style_function=lambda x: {
+            'color': '#0000FF', 
+            'fillColor': 'transparent', 
+            'weight': 2,
+            'dashArray': '5, 5'
+        }
     ).add_to(m)
     
-    # 2. Add faint background raster (Context)
+    # 2. افزودن لایه حرارتی پس‌زمینه (Raster Overlay با اصلاح تنظیمات چاپ تصویر)
     if st.session_state.nc_out and os.path.exists(st.session_state.nc_out):
         try:
             ds_res = xr.open_dataset(st.session_state.nc_out)
             if "pfz_index" in ds_res:
                 pfz_da = ds_res["pfz_index"]
-                fig, ax = plt.subplots(figsize=(8, 6))
-                ax.axis('off')
-                pfz_da.plot.imshow(ax=ax, cmap="coolwarm", alpha=0.3, vmin=0, vmax=1, add_colorbar=False)
+                
+                # تنظیم دقیق ابعاد پلات بدون حاشیه اضافی برای تطابق صددرصدی با مختصات
+                fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
+                ax.set_axis_off()
+                plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+                
+                pfz_da.plot.imshow(
+                    ax=ax, 
+                    cmap="coolwarm", 
+                    alpha=0.5, 
+                    vmin=0, 
+                    vmax=1, 
+                    add_colorbar=False
+                )
+                
                 overlay_path = os.path.join(output_dir, "pfz_overlay.png")
-                fig.savefig(overlay_path, bbox_inches='tight', pad_inches=0, transparent=True, dpi=100)
+                fig.savefig(overlay_path, dpi=150, transparent=True, bbox_inches='tight', pad_inches=0)
                 plt.close(fig)
                 
                 folium.raster_layers.ImageOverlay(
                     image=overlay_path,
                     bounds=[[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]],
-                    opacity=0.5,
+                    opacity=0.6,
                     name="Background Heatmap"
                 ).add_to(m)
         except Exception as e:
             st.warning(f"امکان نمایش لایه پس‌زمینه حرارتی وجود ندارد: {e}")
     
-    # 3. Add INCOIS-Style Vector Contours (The Fronts)
+    # 3. افزودن خطوط جبهه (INCOIS-Style Vector Contours)
+    fronts_gdf = None
     if st.session_state.fronts_geojson and os.path.exists(st.session_state.fronts_geojson):
-        folium.GeoJson(
-            st.session_state.fronts_geojson,
-            name="PFZ Front Lines (High Probability)",
-            style_function=lambda x: {
-                'color': '#FF0000', # Solid Red lines
-                'weight': 3.5,      # Thick lines like INCOIS
-                'opacity': 0.9
-            }
-        ).add_to(m)
-    
-    # تنظیم محدوده نقشه روی محدوده شیپ‌فایل آپلود شده
+        try:
+            fronts_gdf = gpd.read_file(st.session_state.fronts_geojson)
+            if not fronts_gdf.empty:
+                if fronts_gdf.crs is not None and fronts_gdf.crs != "EPSG:4326":
+                    fronts_gdf = fronts_gdf.to_crs("EPSG:4326")
+                
+                folium.GeoJson(
+                    fronts_gdf,
+                    name="PFZ Front Lines (High Probability)",
+                    style_function=lambda x: {
+                        'color': '#FF0000', # خطوط قرمز تیره مشخص
+                        'weight': 3.5,      # ضخامت مناسب
+                        'opacity': 0.9
+                    }
+                ).add_to(m)
+                st.success(f"✅ تعداد {len(fronts_gdf)} خط جبهه روی نقشه بارگذاری شد.")
+            else:
+                st.warning("⚠️ فایل جبهه‌های استخراج‌شده خالی است (عارضه‌ای یافت نشد).")
+        except Exception as err:
+            st.error(f"خطا در خواندن فایل GeoJSON جبهه‌ها: {err}")
+
+    # تنظیم محدوده نقشه روی مختصات شیپ‌فایل
     m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
     
     folium.LayerControl().add_to(m)
     st_folium(m, width=1100, height=600)
     
-    # Download Button for the Vector Data
+    # نمایش جدول اطلاعات توصیفی عوارض جبهه (Attribute Table)
+    if fronts_gdf is not None and not fronts_gdf.empty:
+        st.subheader("📋 جدول اطلاعات عوارض خطوط جبهه استخراج‌شده")
+        st.dataframe(fronts_gdf.drop(columns='geometry', errors='ignore'), use_container_width=True)
+
+    # دکمه دانلود داده‌های برداری
     if st.session_state.fronts_geojson and os.path.exists(st.session_state.fronts_geojson):
         with open(st.session_state.fronts_geojson, "rb") as file:
             st.download_button(
-                label="دانلود خطوط جبهه (GeoJSON)",
+                label="📥 دانلود خطوط جبهه نهایی (GeoJSON)",
                 data=file,
                 file_name="pfz_front_lines.geojson",
                 mime="application/geo+json"
