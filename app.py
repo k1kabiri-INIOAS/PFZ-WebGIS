@@ -77,6 +77,9 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                 
                 with st.spinner("در حال اتصال به سرور و دریافت داده‌ها..."):
                     gdf = gpd.read_file(shapefile_path)
+                    # تبدیل مختصات به WGS84 برای سازگاری کامل با فولیوم
+                    if gdf.crs is not None and gdf.crs != "EPSG:4326":
+                        gdf = gdf.to_crs("EPSG:4326")
                     minx, miny, maxx, maxy = gdf.total_bounds
                     
                     os.makedirs(output_dir, exist_ok=True)
@@ -105,42 +108,47 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                         st.error("خطا در دریافت داده‌های ماهواره‌ای.")
 
 # Render Results
-if st.session_state.analysis_done:
+if st.session_state.analysis_done and st.session_state.gdf is not None:
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه (INCOIS Style)")
     
     center_lat = (st.session_state.miny + st.session_state.maxy) / 2
     center_lon = (st.session_state.minx + st.session_state.maxx) / 2
     
+    # استفاده از OpenStreetMap به جای CartoDB برای جلوگیری از خطای API Key
     m = folium.Map(
         location=[center_lat, center_lon], 
         zoom_start=6, 
-        tiles="CartoDB positron"
+        tiles="OpenStreetMap"
     )
     
     # 1. Add region boundary polygon
     folium.GeoJson(
         st.session_state.gdf,
         name="Region Boundary",
-        style_function=lambda x: {'color': 'blue', 'fillColor': 'transparent', 'weight': 1}
+        style_function=lambda x: {'color': 'blue', 'fillColor': 'transparent', 'weight': 1.5}
     ).add_to(m)
     
     # 2. Add faint background raster (Context)
     if st.session_state.nc_out and os.path.exists(st.session_state.nc_out):
-        ds_res = xr.open_dataset(st.session_state.nc_out)
-        pfz_da = ds_res["pfz_index"]
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.axis('off')
-        pfz_da.plot.imshow(ax=ax, cmap="coolwarm", alpha=0.3, vmin=0, vmax=1, add_colorbar=False)
-        overlay_path = os.path.join(output_dir, "pfz_overlay.png")
-        fig.savefig(overlay_path, bbox_inches='tight', pad_inches=0, transparent=True, dpi=100)
-        plt.close(fig)
-        
-        folium.raster_layers.ImageOverlay(
-            image=overlay_path,
-            bounds=[[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]],
-            opacity=0.4,
-            name="Background Heatmap"
-        ).add_to(m)
+        try:
+            ds_res = xr.open_dataset(st.session_state.nc_out)
+            if "pfz_index" in ds_res:
+                pfz_da = ds_res["pfz_index"]
+                fig, ax = plt.subplots(figsize=(8, 6))
+                ax.axis('off')
+                pfz_da.plot.imshow(ax=ax, cmap="coolwarm", alpha=0.3, vmin=0, vmax=1, add_colorbar=False)
+                overlay_path = os.path.join(output_dir, "pfz_overlay.png")
+                fig.savefig(overlay_path, bbox_inches='tight', pad_inches=0, transparent=True, dpi=100)
+                plt.close(fig)
+                
+                folium.raster_layers.ImageOverlay(
+                    image=overlay_path,
+                    bounds=[[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]],
+                    opacity=0.5,
+                    name="Background Heatmap"
+                ).add_to(m)
+        except Exception as e:
+            st.warning(f"امکان نمایش لایه پس‌زمینه حرارتی وجود ندارد: {e}")
     
     # 3. Add INCOIS-Style Vector Contours (The Fronts)
     if st.session_state.fronts_geojson and os.path.exists(st.session_state.fronts_geojson):
@@ -154,6 +162,9 @@ if st.session_state.analysis_done:
             }
         ).add_to(m)
     
+    # تنظیم محدوده نقشه روی محدوده شیپ‌فایل آپلود شده
+    m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
+    
     folium.LayerControl().add_to(m)
     st_folium(m, width=1100, height=600)
     
@@ -166,3 +177,5 @@ if st.session_state.analysis_done:
                 file_name="pfz_front_lines.geojson",
                 mime="application/geo+json"
             )
+else:
+    st.info("💡 لطفاً ابتدا محدوده مورد نظر خود را از طریق فایل شیپ‌فایل در سایدبار بارگذاری کرده و دکمه‌ی تحلیل را بزنید.")
