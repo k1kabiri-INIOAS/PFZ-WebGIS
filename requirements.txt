@@ -12,3 +12,4 @@ rasterio
 netcdf4
 h5netcdf
 h5py
+scipy
