@@ -1,127 +1,168 @@
+# File Name: app.py
+# Description: Streamlit GUI main application file with INCOIS-style vector fronts rendering.
+
 import os
 import tempfile
 import zipfile
 import streamlit as st
-import pandas as pd
 import geopandas as gpd
+import xarray as xr
+import numpy as np
+import matplotlib.pyplot as plt
 import folium
 from streamlit_folium import st_folium
+from modules.fetcher import fetch_near_realtime_data
+from modules.processor import process_pfz_pipeline
 
-# تنظیمات صفحه استریم‌لیت
-st.set_page_config(
-    page_title="سامانه پایش جبهه‌ها و مناطق حاشیه‌ای اقیانوسی (PFZ)",
-    layout="wide"
+# تنظیم بک‌اند متپلوت‌لیب برای محیط بدون گرافیک سرور
+plt.switch_backend('Agg')
+
+st.set_page_config(page_title="PFZ Management System", layout="wide")
+
+st.title("🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ)")
+st.markdown("سامانه یکپارچه اقیانوس‌شناسی WebGIS با قابلیت استخراج خطوط جبهه (INCOIS Style).")
+
+st.sidebar.header("تنظیمات پردازش و مدل")
+
+uploaded_shapefile_zip = st.sidebar.file_uploader(
+    "آپلود فایل فشرده شیپ‌فایل منطقه (.zip)", 
+    type="zip",
+    help="لطفاً فایل‌های شیپ‌فایل خود (.shp, .shx, .dbf, .prj) را در یک فایل فشرده (ZIP) قرار داده و آپلود کنید."
 )
 
-# اطمینان از وجود پوشه خروجی
-os.makedirs("outputs", exist_ok=True)
+output_dir = "Data_Processed"
 
-st.title("🌊 سامانه پایش و تحلیل پویایی جبهه‌های اقیانوسی")
-st.markdown("سامانه وب‌جی‌آیس تخصصی برای نمایش، تحلیل و پایش جبهه‌های اقیانوسی و محدوده‌های مطالعاتی.")
+st.sidebar.subheader("وزن‌دهی پارامترها")
+sst_weight = st.sidebar.slider("وزن جبهه‌های حرارتی SST", 0.0, 1.0, 0.5, 0.1)
+chl_weight = st.sidebar.slider("وزن کلروفیل-آ (Chlorophyll-a)", 0.0, 1.0, 0.5, 0.1)
 
-# نوار کناری (Sidebar) برای بارگذاری داده‌های مکانی
-st.sidebar.header("⚙️ داده‌های ورودی مکانی")
-uploaded_file = st.sidebar.file_uploader(
-    "بارگذاری محدوده یا فایل برداری (Shapefile فشرده .zip یا GeoJSON)",
-    type=["zip", "geojson"]
-)
+# Session State Initialization
+if "analysis_done" not in st.session_state:
+    st.session_state.analysis_done = False
+if "nc_out" not in st.session_state:
+    st.session_state.nc_out = None
+if "tif_out" not in st.session_state:
+    st.session_state.tif_out = None
+if "fronts_geojson" not in st.session_state:
+    st.session_state.fronts_geojson = None
+if "gdf" not in st.session_state:
+    st.session_state.gdf = None
+if "minx" not in st.session_state:
+    st.session_state.minx = None
+if "miny" not in st.session_state:
+    st.session_state.miny = None
+if "maxx" not in st.session_state:
+    st.session_state.maxx = None
+if "maxy" not in st.session_state:
+    st.session_state.maxy = None
 
-geojson_output_path = "outputs/pfz_fronts.geojson"
-gdf = None
-
-# پردازش فایل آپلود شده
-if uploaded_file is not None:
-    try:
-        if uploaded_file.name.endswith(".zip"):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                zip_path = os.path.join(tmpdir, uploaded_file.name)
-                with open(zip_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(tmpdir)
+if st.sidebar.button("دریافت داده‌های به‌روز و اجرای تحلیل"):
+    if uploaded_shapefile_zip is None:
+        st.error("لطفاً فایل فشرده شیپ‌فایل منطقه (.zip) را در سایدبار آپلود کنید.")
+    else:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with zipfile.ZipFile(uploaded_shapefile_zip, 'r') as zip_ref:
+                zip_ref.extractall(tmpdir)
+            
+            shp_files = []
+            for root, dirs, files in os.walk(tmpdir):
+                for file in files:
+                    if file.endswith('.shp'):
+                        shp_files.append(os.path.join(root, file))
+            
+            if not shp_files:
+                st.error("فایل با پسوند .shp در داخل فایل فشرده یافت نشد.")
+            else:
+                shapefile_path = shp_files[0]
                 
-                shp_files = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.endswith(".shp")]
-                if shp_files:
-                    gdf = gpd.read_file(shp_files[0])
-                    # ذخیره به عنوان خروجی پیش‌فرض سامانه
-                    gdf.to_file(geojson_output_path, driver="GeoJSON")
-                    st.sidebar.success(f"✅ محدوده بارگذاری شد (تعداد عوارض: {len(gdf)})")
-                else:
-                    st.sidebar.error("❌ فایل .shp درون فایل فشرده یافت نشد.")
-        
-        elif uploaded_file.name.endswith(".geojson"):
-            gdf = gpd.read_file(uploaded_file)
-            gdf.to_file(geojson_output_path, driver="GeoJSON")
-            st.sidebar.success("✅ فایل GeoJSON با موفقیت بارگذاری شد!")
-    except Exception as e:
-        st.sidebar.error(f"❌ خطا در خواندن فایل برداری: {e}")
+                with st.spinner("در حال اتصال به سرور و دریافت داده‌ها..."):
+                    gdf = gpd.read_file(shapefile_path)
+                    minx, miny, maxx, maxy = gdf.total_bounds
+                    
+                    os.makedirs(output_dir, exist_ok=True)
+                    sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
+                    
+                    if sst_nc_path and chl_nc_path:
+                        st.success(f"داده‌های تاریخ {latest_date} با موفقیت دریافت شدند.")
+                        
+                        with st.spinner("در حال محاسبه مدل و استخراج خطوط جبهه..."):
+                            nc_out, tif_out, fronts_geojson = process_pfz_pipeline(
+                                shapefile_path, sst_nc_path, chl_nc_path, output_dir, sst_weight, chl_weight
+                            )
+                            
+                            st.session_state.analysis_done = True
+                            st.session_state.nc_out = nc_out
+                            st.session_state.tif_out = tif_out
+                            st.session_state.fronts_geojson = fronts_geojson
+                            st.session_state.gdf = gdf
+                            st.session_state.minx = minx
+                            st.session_state.miny = miny
+                            st.session_state.maxx = maxx
+                            st.session_state.maxy = maxy
+                            
+                            st.success("تحلیل چندمتواره و استخراج جبهه‌ها با موفقیت به پایان رسید!")
+                    else:
+                        st.error("خطا در دریافت داده‌های ماهواره‌ای.")
 
-# اگر فایلی آپلود نشده باشد اما فایل خروجی قبلی روی دیسک موجود باشد، آن را بارگذاری می‌کنیم
-if gdf is None and os.path.exists(geojson_output_path):
-    try:
-        gdf = gpd.read_file(geojson_output_path)
-    except Exception:
-        pass
-
-# بخش اصلی: نمایش نقشه تعاملی
-st.subheader("🗺️ نقشه تعاملی مناطق و جبهه‌های اقیانوسی")
-
-# ایجاد نقشه پایه فولیوم (متمرکز روی خلیج فارس / منطقه جنوب ایران به صورت پیش‌فرض)
-m = folium.Map(location=[26.5, 54.0], zoom_start=6, tiles="CartoDB positron")
-
-if gdf is not None and not gdf.empty:
-    # اطمینان از سیستم مختصات جغرافیایی WGS84
-    if gdf.crs is not None and gdf.crs != "EPSG:4326":
-        gdf = gdf.to_crs("EPSG:4326")
+# Render Results
+if st.session_state.analysis_done:
+    st.subheader("🗺️ نقشه تعاملی خطوط جبهه (INCOIS Style)")
     
-    # افزودن لایه برداری به نقشه
+    center_lat = (st.session_state.miny + st.session_state.maxy) / 2
+    center_lon = (st.session_state.minx + st.session_state.maxx) / 2
+    
+    m = folium.Map(
+        location=[center_lat, center_lon], 
+        zoom_start=6, 
+        tiles="CartoDB positron"
+    )
+    
+    # 1. Add region boundary polygon
     folium.GeoJson(
-        gdf,
-        name="محدوده / جبهه",
-        style_function=lambda x: {
-            'color': '#1f77b4',
-            'weight': 2.5,
-            'fillColor': '#ff7f0e',
-            'fillOpacity': 0.2
-        }
+        st.session_state.gdf,
+        name="Region Boundary",
+        style_function=lambda x: {'color': 'blue', 'fillColor': 'transparent', 'weight': 1}
     ).add_to(m)
     
-    # تنظیم خودکار زوم نقشه روی مختصات لایه
-    bounds = gdf.total_bounds  # [xmin, ymin, xmax, ymax]
-    if len(bounds) == 4 and not pd.isna(bounds).any():
-        m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
-
-folium.LayerControl().add_to(m)
-
-# رندر نقشه در استریم‌لیت با استفاده از streamlit-folium
-st_data = st_folium(m, width=1250, height=520)
-
-st.divider()
-
-# بخش مدیریت فایل، دانلود و جدول اطلاعات توصیفی
-col1, col2 = st.columns([1, 2])
-
-with col1:
-    st.subheader("📥 دانلود خروجی")
-    if os.path.exists(geojson_output_path):
-        with open(geojson_output_path, "rb") as file:
+    # 2. Add faint background raster (Context)
+    if st.session_state.nc_out and os.path.exists(st.session_state.nc_out):
+        ds_res = xr.open_dataset(st.session_state.nc_out)
+        pfz_da = ds_res["pfz_index"]
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.axis('off')
+        pfz_da.plot.imshow(ax=ax, cmap="coolwarm", alpha=0.3, vmin=0, vmax=1, add_colorbar=False)
+        overlay_path = os.path.join(output_dir, "pfz_overlay.png")
+        fig.savefig(overlay_path, bbox_inches='tight', pad_inches=0, transparent=True, dpi=100)
+        plt.close(fig)
+        
+        folium.raster_layers.ImageOverlay(
+            image=overlay_path,
+            bounds=[[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]],
+            opacity=0.4,
+            name="Background Heatmap"
+        ).add_to(m)
+    
+    # 3. Add INCOIS-Style Vector Contours (The Fronts)
+    if st.session_state.fronts_geojson and os.path.exists(st.session_state.fronts_geojson):
+        folium.GeoJson(
+            st.session_state.fronts_geojson,
+            name="PFZ Front Lines (High Probability)",
+            style_function=lambda x: {
+                'color': '#FF0000', # Solid Red lines
+                'weight': 3.5,      # Thick lines like INCOIS
+                'opacity': 0.9
+            }
+        ).add_to(m)
+    
+    folium.LayerControl().add_to(m)
+    st_folium(m, width=1100, height=600)
+    
+    # Download Button for the Vector Data
+    if st.session_state.fronts_geojson and os.path.exists(st.session_state.fronts_geojson):
+        with open(st.session_state.fronts_geojson, "rb") as file:
             st.download_button(
-                label="دانلود فایل نهایی (GeoJSON)",
+                label="دانلود خطوط جبهه (GeoJSON)",
                 data=file,
-                file_name="pfz_fronts.geojson",
-                mime="application/json"
+                file_name="pfz_front_lines.geojson",
+                mime="application/geo+json"
             )
-    else:
-        st.info("هنوز فایلی برای دانلود موجود نیست.")
-
-with col2:
-    st.subheader("📊 اطلاعات آماری و عوارض")
-    if gdf is not None and not gdf.empty:
-        st.write(f"تعداد کل عوارض ثبت‌شده: **{len(gdf)}**")
-    else:
-        st.warning("⚠️ هیچ لایه مکانی فعال یا بارگذاری نشده است. لطفاً یک فایل Shapefile یا GeoJSON از منوی کناری بارگذاری کنید.")
-
-# نمایش جدول اطلاعات توصیفی در صورت وجود داده
-if gdf is not None and not gdf.empty:
-    st.subheader("📋 جدول اطلاعات توصیفی (Attribute Table)")
-    st.dataframe(gdf.drop(columns='geometry', errors='ignore'), use_container_width=True)
