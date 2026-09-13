@@ -73,12 +73,18 @@ def process_pfz_pipeline(shapefile_path, sst_nc_path, chl_nc_path, output_dir, s
     levels = [0.65, 0.75, 0.85] 
     cs = ax.contour(lon_arr, lat_arr, pfz_arr, levels=levels)
     
-    lines = []
-    for collection in cs.collections:
-        for path in collection.get_paths():
-            v = path.vertices
-            if len(v) >= 2:
-                lines.append(LineString(v))
+lines = []
+    
+    # بررسی سازگاری با نسخه‌های جدید و قدیم matplotlib
+    if hasattr(cs, 'collections'):
+        paths = [path for coll in cs.collections for path in coll.get_paths()]
+    else:
+        paths = cs.get_paths()
+
+    for path in paths:
+        v = path.vertices
+        if len(v) >= 2:
+            lines.append(LineString(v))
     plt.close(fig)
     
     fronts_geojson_path = os.path.join(output_dir, "pfz_fronts.geojson")
