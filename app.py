@@ -4,6 +4,8 @@ import pandas as pd
 import xarray as xr
 import geopandas as gpd
 import matplotlib.pyplot as plt
+import tempfile
+import zipfile
 
 # تنظیمات صفحه استریم‌لیت
 st.set_page_config(
@@ -17,17 +19,42 @@ os.makedirs("outputs", exist_ok=True)
 st.title("🌊 سامانه پایش و تحلیل پویایی جبهه‌های اقیانوسی")
 st.markdown("این سامانه برای استخراج، پردازش و پایش جبهه‌ها و توده‌های آب از داده‌های ماهواره‌ای طراحی شده است.")
 
-# نوار کناری (Sidebar) برای تنظیمات ورودی
-st.sidebar.header("⚙️ تنظیمات پارامترها و بازه زمانی")
+# نوار کناری (Sidebar) برای تنظیمات و ورودی‌ها
+st.sidebar.header("⚙️ تنظیمات و داده‌های ورودی")
+
+# بخش آپلود Shapefile یا GeoJSON
+uploaded_file = st.sidebar.file_uploader(
+    "بارگذاری محدوده مطالعاتی (Shapefile فشرده .zip یا GeoJSON)",
+    type=["zip", "geojson"]
+)
+
+region_gdf = None
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.endswith(".zip"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                zip_path = os.path.join(tmpdir, uploaded_file.name)
+                with open(zip_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(tmpdir)
+                
+                shp_files = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.endswith(".shp")]
+                if shp_files:
+                    region_gdf = gpd.read_file(shp_files[0])
+                    st.sidebar.success(f"✅ محدوده بارگذاری شد (تعداد عوارض: {len(region_gdf)})")
+                else:
+                    st.sidebar.error("❌ فایل .shp درون فایل فشرده یافت نشد.")
+        
+        elif uploaded_file.name.endswith(".geojson"):
+            region_gdf = gpd.read_file(uploaded_file)
+            st.sidebar.success(f"✅ فایل GeoJSON بارگذاری شد!")
+    except Exception as e:
+        st.sidebar.error(f"❌ خطا در خواندن فایل: {e}")
 
 date_range = st.sidebar.date_input(
     "بازه زمانی پایش",
     value=[]
-)
-
-region = st.sidebar.selectbox(
-    "انتخاب ناحیه مطالعاتی",
-    ["خلیج فارس و دریای عمان", "اقیانوس هند شمالی", "دریای خزر", "منطقه سفارشی"]
 )
 
 run_pipeline = st.sidebar.button("🚀 اجرای پایپ‌لاین پردازش")
@@ -38,7 +65,7 @@ geojson_output_path = "outputs/pfz_fronts.geojson"
 if run_pipeline:
     with st.spinner("در حال دریافت داده‌های ماهواره‌ای و محاسبه گرادیان‌های فضایی..."):
         try:
-            # شبیه‌سازی یا فراخوانی بخش پردازش داده با xarray و rioxarray
+            # کدهای پردازشی شما (فراخوانی منطق xarray و استخراج جبهه‌ها)
             st.success("✅ پردازش داده‌ها و استخراج جبهه‌ها با موفقیت انجام شد!")
         except Exception as e:
             st.error(f"❌ خطا در اجرای پایپ‌لاین پردازش: {str(e)}")
@@ -58,7 +85,6 @@ if os.path.exists(geojson_output_path):
             mime="application/json"
         )
     
-    # نمایش نقشه یا اطلاعات توصیفی در صورت وجود داده
     try:
         gdf = gpd.read_file(geojson_output_path)
         if not gdf.empty:
@@ -78,8 +104,8 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.info("نمودار تغییرات دمای سطح دریا (SST)")
-    # قرار دادن کدهای رسم نمودار ماتپلوت‌لیب یا پلاتلی در اینجا
+    # کدهای رسم نمودار SST
 
 with col2:
     st.info("نمودار ناهنجاری‌ها و شاخص کلروفیل")
-    # قرار دادن کدهای مرتبط با داده‌های کلروفیل
+    # کدهای رسم نمودار کلروفیل
