@@ -9,7 +9,7 @@ import rioxarray
 def process_pfz_pipeline(*args, **kwargs):
     """
     پردازش داده‌های SST و Chlorophyll برای استخراج مناطق مستعد صید (PFZ)
-    نسخه ایمن با مدیریت خطای کامل برای جلوگیری از خروجی‌های Null
+    نسخه سازگار با نام متغیرهای مختلف در app.py (پشتیبانی از pfz و pfz_index)
     """
     out_dir = "outputs"
     os.makedirs(out_dir, exist_ok=True)
@@ -24,11 +24,9 @@ def process_pfz_pipeline(*args, **kwargs):
         sst_nc_path = all_args[1] if len(all_args) > 1 else kwargs.get('sst_nc_path')
         chl_nc_path = all_args[2] if len(all_args) > 2 else kwargs.get('chl_nc_path')
 
-        # بررسی وجود فایل‌های ورودی NetCDF
         if not sst_nc_path or not os.path.exists(sst_nc_path) or not chl_nc_path or not os.path.exists(chl_nc_path):
             raise FileNotFoundError("فایل‌های ورودی SST یا Chlorophyll یافت نشدند.")
 
-        # بارگذاری داده‌های نت‌سی‌دی‌اف
         ds_sst = xr.open_dataset(sst_nc_path)
         ds_chl = xr.open_dataset(chl_nc_path)
 
@@ -73,9 +71,12 @@ def process_pfz_pipeline(*args, **kwargs):
             gdf = gpd.GeoDataFrame(columns=['geometry'], geometry='geometry', crs="EPSG:4326")
         gdf.to_file(fronts_geojson, driver="GeoJSON")
 
-        # تولید NetCDF و TIFF معتبر
+        # تولید Dataset با هر دو نام متغیر برای جلوگیری از KeyError در app.py
         ds_out = xr.Dataset(
-            {"pfz": (["lat", "lon"], pfz_arr)},
+            {
+                "pfz": (["lat", "lon"], pfz_arr),
+                "pfz_index": (["lat", "lon"], pfz_arr)
+            },
             coords={"lon": lon_arr, "lat": lat_arr}
         )
         ds_out.rio.write_crs("epsg:4326", inplace=True)
@@ -88,14 +89,16 @@ def process_pfz_pipeline(*args, **kwargs):
     except Exception as e:
         print(f"Error in PFZ pipeline: {e}")
         
-        # ساخت فایل‌های پیش‌فرض و خالی در صورت بروز خطا برای جلوگیری از کرش شدن اپلیکیشن
         try:
             dummy_lon = np.linspace(48, 52, 10)
             dummy_lat = np.linspace(25, 30, 10)
             dummy_data = np.zeros((10, 10))
             
             ds_dummy = xr.Dataset(
-                {"pfz": (["lat", "lon"], dummy_data)},
+                {
+                    "pfz": (["lat", "lon"], dummy_data),
+                    "pfz_index": (["lat", "lon"], dummy_data)
+                },
                 coords={"lon": dummy_lon, "lat": dummy_lat}
             )
             ds_dummy.rio.write_crs("epsg:4326", inplace=True)
