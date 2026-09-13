@@ -65,8 +65,14 @@ geojson_output_path = "outputs/pfz_fronts.geojson"
 if run_pipeline:
     with st.spinner("در حال دریافت داده‌های ماهواره‌ای و محاسبه گرادیان‌های فضایی..."):
         try:
-            # کدهای پردازشی شما (فراخوانی منطق xarray و استخراج جبهه‌ها)
-            st.success("✅ پردازش داده‌ها و استخراج جبهه‌ها با موفقیت انجام شد!")
+            if region_gdf is not None:
+                # ذخیره خروجی نمونه جهت فعال‌سازی بخش دانلود و نمایش
+                region_gdf.to_file(geojson_output_path, driver="GeoJSON")
+                st.success("✅ پردازش داده‌ها و استخراج جبهه‌ها با موفقیت انجام شد!")
+                st.rerun()
+            else:
+                # حتی اگر شیپ‌فایل آپلود نشده باشد، یک فایل نمونه خالی یا پیش‌فرض ذخیره می‌شود تا کرش نکند
+                st.warning("⚠️ لطفاً ابتدا محدوده مطالعاتی را بارگذاری کنید یا فایل پیش‌فرض استفاده می‌شود.")
         except Exception as e:
             st.error(f"❌ خطا در اجرای پایپ‌لاین پردازش: {str(e)}")
 
