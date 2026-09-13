@@ -1,5 +1,5 @@
 # File Name: app.py
-# Description: Streamlit GUI main application file with INCOIS-style vector fronts rendering.
+# Description: Streamlit GUI main application file with comprehensive debugging for PFZ extraction.
 
 import os
 import tempfile
@@ -77,7 +77,6 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                 
                 with st.spinner("در حال اتصال به سرور و دریافت داده‌ها..."):
                     gdf = gpd.read_file(shapefile_path)
-                    # تبدیل مختصات به WGS84 برای سازگاری کامل با فولیوم
                     if gdf.crs is not None and gdf.crs != "EPSG:4326":
                         gdf = gdf.to_crs("EPSG:4326")
                     minx, miny, maxx, maxy = gdf.total_bounds
@@ -89,70 +88,69 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                         st.success(f"داده‌های تاریخ {latest_date} با موفقیت دریافت شدند.")
                         
                         with st.spinner("در حال محاسبه مدل و استخراج خطوط جبهه..."):
-                            nc_out, tif_out, fronts_geojson = process_pfz_pipeline(
-                                shapefile_path, sst_nc_path, chl_nc_path, output_dir, sst_weight, chl_weight
-                            )
-                            
-                            st.session_state.analysis_done = True
-                            st.session_state.nc_out = nc_out
-                            st.session_state.tif_out = tif_out
-                            st.session_state.fronts_geojson = fronts_geojson
-                            st.session_state.gdf = gdf
-                            st.session_state.minx = minx
-                            st.session_state.miny = miny
-                            st.session_state.maxx = maxx
-                            st.session_state.maxy = maxy
-                            
-                            st.success("تحلیل چندمتواره و استخراج جبهه‌ها با موفقیت به پایان رسید!")
+                            try:
+                                nc_out, tif_out, fronts_geojson = process_pfz_pipeline(
+                                    shapefile_path, sst_nc_path, chl_nc_path, output_dir, sst_weight, chl_weight
+                                )
+                                
+                                st.session_state.analysis_done = True
+                                st.session_state.nc_out = nc_out
+                                st.session_state.tif_out = tif_out
+                                st.session_state.fronts_geojson = fronts_geojson
+                                st.session_state.gdf = gdf
+                                st.session_state.minx = minx
+                                st.session_state.miny = miny
+                                st.session_state.maxx = maxx
+                                st.session_state.maxy = maxy
+                                
+                                st.success("تحلیل چندمتواره و استخراج جبهه‌ها با موفقیت به پایان رسید!")
+                            except Exception as e:
+                                st.error(f"خطا در اجرای پایپ‌لاین پردازشی (`process_pfz_pipeline`): {e}")
                     else:
                         st.error("خطا در دریافت داده‌های ماهواره‌ای.")
 
-# Render Results
+# Render Results & Debug Info
 if st.session_state.analysis_done and st.session_state.gdf is not None:
+    st.subheader("🔍 پنل عیب‌یابی و وضعیت فایل‌های خروجی")
+    
+    # نمایش وضعیت فایل‌های فیزیکی در پوشه پردازش
+    with st.expander("مشاهده وضعیت فایل‌های خروجی سیستم (Debug Logs)", expanded=True):
+        st.write(f"- مسیر فایل NetCDF خروجی: `{st.session_state.nc_out}` (وجود دارد: {os.path.exists(str(st.session_state.nc_out))})")
+        st.write(f"- مسیر فایل TIF خروجی: `{st.session_state.tif_out}` (وجود دارد: {os.path.exists(str(st.session_state.tif_out))})")
+        st.write(f"- مسیر فایل GeoJSON جبهه‌ها: `{st.session_state.fronts_geojson}` (وجود دارد: {os.path.exists(str(st.session_state.fronts_geojson))})")
+        
+        if st.session_state.fronts_geojson and os.path.exists(st.session_state.fronts_geojson):
+            file_size = os.path.getsize(st.session_state.fronts_geojson)
+            st.write(f"- حجم فایل GeoJSON جبهه‌ها: {file_size} بایت")
+
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه (INCOIS Style)")
     
     center_lat = (st.session_state.miny + st.session_state.maxy) / 2
     center_lon = (st.session_state.minx + st.session_state.maxx) / 2
     
-    # ساخت نقشه پایه
     m = folium.Map(
         location=[center_lat, center_lon], 
         zoom_start=6, 
         tiles="OpenStreetMap"
     )
     
-    # 1. افزودن محدوده مطالعاتی (Region Boundary)
+    # 1. افزودن محدوده مطالعاتی
     folium.GeoJson(
         st.session_state.gdf,
         name="Region Boundary",
-        style_function=lambda x: {
-            'color': '#0000FF', 
-            'fillColor': 'transparent', 
-            'weight': 2,
-            'dashArray': '5, 5'
-        }
+        style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
     ).add_to(m)
     
-    # 2. افزودن لایه حرارتی پس‌زمینه (Raster Overlay با اصلاح تنظیمات چاپ تصویر)
+    # 2. افزودن لایه پس‌زمینه حرارتی
     if st.session_state.nc_out and os.path.exists(st.session_state.nc_out):
         try:
             ds_res = xr.open_dataset(st.session_state.nc_out)
             if "pfz_index" in ds_res:
                 pfz_da = ds_res["pfz_index"]
-                
-                # تنظیم دقیق ابعاد پلات بدون حاشیه اضافی برای تطابق صددرصدی با مختصات
                 fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
                 ax.set_axis_off()
                 plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-                
-                pfz_da.plot.imshow(
-                    ax=ax, 
-                    cmap="coolwarm", 
-                    alpha=0.5, 
-                    vmin=0, 
-                    vmax=1, 
-                    add_colorbar=False
-                )
+                pfz_da.plot.imshow(ax=ax, cmap="coolwarm", alpha=0.5, vmin=0, vmax=1, add_colorbar=False)
                 
                 overlay_path = os.path.join(output_dir, "pfz_overlay.png")
                 fig.savefig(overlay_path, dpi=150, transparent=True, bbox_inches='tight', pad_inches=0)
@@ -167,46 +165,43 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
         except Exception as e:
             st.warning(f"امکان نمایش لایه پس‌زمینه حرارتی وجود ندارد: {e}")
     
-    # 3. افزودن خطوط جبهه (INCOIS-Style Vector Contours)
+    # 3. بررسی و خواندن فایل GeoJSON جبهه‌ها
     fronts_gdf = None
     if st.session_state.fronts_geojson and os.path.exists(st.session_state.fronts_geojson):
         try:
             fronts_gdf = gpd.read_file(st.session_state.fronts_geojson)
+            st.info(f"📊 اطلاعات فایل جبهه‌ها: شامل {len(fronts_gdf)} عارضه (Feature) است.")
+            
             if not fronts_gdf.empty:
                 if fronts_gdf.crs is not None and fronts_gdf.crs != "EPSG:4326":
                     fronts_gdf = fronts_gdf.to_crs("EPSG:4326")
                 
                 folium.GeoJson(
                     fronts_gdf,
-                    name="PFZ Front Lines (High Probability)",
-                    style_function=lambda x: {
-                        'color': '#FF0000', # خطوط قرمز تیره مشخص
-                        'weight': 3.5,      # ضخامت مناسب
-                        'opacity': 0.9
-                    }
+                    name="PFZ Front Lines",
+                    style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 0.9}
                 ).add_to(m)
-                st.success(f"✅ تعداد {len(fronts_gdf)} خط جبهه روی نقشه بارگذاری شد.")
             else:
-                st.warning("⚠️ فایل جبهه‌های استخراج‌شده خالی است (عارضه‌ای یافت نشد).")
+                st.warning("⚠️ فایل جبهه‌ها با موفقیت خوانده شد اما تعداد عوارض درون آن صفر (خالی) است!")
         except Exception as err:
-            st.error(f"خطا در خواندن فایل GeoJSON جبهه‌ها: {err}")
+            st.error(f"❌ خطا در تجزیه و خواندن فایل GeoJSON جبهه‌ها: {err}")
 
-    # تنظیم محدوده نقشه روی مختصات شیپ‌فایل
     m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
-    
     folium.LayerControl().add_to(m)
     st_folium(m, width=1100, height=600)
     
-    # نمایش جدول اطلاعات توصیفی عوارض جبهه (Attribute Table)
+    # نمایش جدول اطلاعات توصیفی
     if fronts_gdf is not None and not fronts_gdf.empty:
         st.subheader("📋 جدول اطلاعات عوارض خطوط جبهه استخراج‌شده")
         st.dataframe(fronts_gdf.drop(columns='geometry', errors='ignore'), use_container_width=True)
+    else:
+        st.warning("ℹ️ به دلیل خالی بودن یا عدم تشکیل خطوط جبهه در خروجی مدل، جدول اطلاعات قابل نمایش نیست.")
 
-    # دکمه دانلود داده‌های برداری
+    # دکمه دانلود
     if st.session_state.fronts_geojson and os.path.exists(st.session_state.fronts_geojson):
         with open(st.session_state.fronts_geojson, "rb") as file:
             st.download_button(
-                label="📥 دانلود خطوط جبهه نهایی (GeoJSON)",
+                label="📥 دانلود فایل خروجی جبهه",
                 data=file,
                 file_name="pfz_front_lines.geojson",
                 mime="application/geo+json"
