@@ -1,5 +1,5 @@
 # File Name: fetcher.py
-# Description: Module for fetching near real-time SST and Chlorophyll-a data from ERDDAP.
+# Description: Module for fetching near real-time SST and Chlorophyll-a data from ERDDAP with robust fallback.
 
 import os
 import requests
@@ -51,8 +51,11 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
         longitudes = np.linspace(minx, maxx, 100)
         lon_2d, lat_2d = np.meshgrid(longitudes, latitudes)
         sst_vals = 28.0 - (lat_2d - miny) * 0.4 + np.sin(lon_2d * 0.1) * 1.2
-        xr.Dataset({"analysed_sst": (["latitude", "longitude"], sst_vals)}, 
-                   coords={"latitude": latitudes, "longitude": longitudes}).to_netcdf(sst_nc_path)
+        fallback_ds = xr.Dataset(
+            {"analysed_sst": (["latitude", "longitude"], sst_vals)}, 
+            coords={"latitude": latitudes, "longitude": longitudes}
+        )
+        fallback_ds.to_netcdf(sst_nc_path, engine="h5netcdf")
 
     # 2. Fetch Chlorophyll-a Data (with fallback)
     try:
@@ -81,7 +84,10 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
         longitudes = np.linspace(minx, maxx, 100)
         lon_2d, lat_2d = np.meshgrid(longitudes, latitudes)
         chl_vals = 0.5 + 0.3 * np.sin(np.radians(lat_2d)) * np.cos(np.radians(lon_2d))
-        xr.Dataset({"chla": (["latitude", "longitude"], chl_vals)}, 
-                   coords={"latitude": latitudes, "longitude": longitudes}).to_netcdf(chl_nc_path)
+        fallback_chl = xr.Dataset(
+            {"chla": (["latitude", "longitude"], chl_vals)}, 
+            coords={"latitude": latitudes, "longitude": longitudes}
+        )
+        fallback_chl.to_netcdf(chl_nc_path, engine="h5netcdf")
                    
     return sst_nc_path, chl_nc_path, time_end_str
