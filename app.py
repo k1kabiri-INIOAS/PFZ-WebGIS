@@ -11,10 +11,13 @@ import folium
 from shapely.geometry import LineString
 from streamlit_folium import st_folium
 import scipy.ndimage as ndimage
+import warnings
+
 from modules.fetcher import fetch_near_realtime_data
 from modules.processor import process_pfz_pipeline
 
-# تنظیم بک‌اند متپلوت‌لیب
+# جلوگیری از چاپ هشدارهای متپلوت‌لیب در لاگ سرور
+warnings.filterwarnings("ignore")
 plt.switch_backend('Agg')
 
 st.set_page_config(page_title="PFZ Management System", layout="wide")
@@ -43,7 +46,7 @@ pfz_threshold = st.sidebar.slider(
     help="اگر هیچ خطی روی نقشه ظاهر نمی‌شود، این مقدار را کاهش دهید تا جبهه‌های ضعیف‌تر نیز شناسایی شوند."
 )
 
-def generate_fronts_fallback(nc_path, output_geojson_path, threshold):
+def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
     try:
         ds = xr.open_dataset(nc_path)
         if "pfz_index" not in ds:
@@ -62,21 +65,30 @@ def generate_fronts_fallback(nc_path, output_geojson_path, threshold):
             
         valid_mask = ~np.isnan(data)
         if not valid_mask.any():
-            st.warning("⚠️ داده‌های محاسباتی تماماً خالی (NaN) هستند. احتمالاً منطقه روی خشکی است.")
+            st.warning("⚠️ داده‌های محاسباتی تماماً خالی (NaN) هستند.")
             return False
             
-        max_val = float(np.nanmax(data))
-        st.info(f"📊 **حداکثر شاخص PFZ در این منطقه و تاریخ:** {max_val:.3f}")
+        raw_max = float(np.nanmax(data))
         
-        # 1. نرم‌سازی (Smoothing) ماتریس برای رفع نویزهای پیکسلی و اتصال جبهه‌ها
+        # نرم‌سازی ماتریس
         data_filled = np.nan_to_num(data, nan=0.0)
         data_smoothed = ndimage.gaussian_filter(data_filled, sigma=1.0)
-        data_smoothed[~valid_mask] = np.nan # برگرداندن ماسک خشکی تا روی ساحل خط نکشد
+        data_smoothed[~valid_mask] = np.nan
         
-        # 2. ایجاد شبکه مختصات استاندارد
+        # محاسبه ماکزیمم جدید پس از فیلتر گوسی
+        valid_smoothed = data_smoothed[valid_mask]
+        smooth_max = float(np.nanmax(valid_smoothed))
+        
+        st.info(f"📊 **حداکثر شاخص خام:** {raw_max:.3f} | **حداکثر پس از نرم‌سازی:** {smooth_max:.3f}")
+        
+        # آداپته کردن آستانه کاربر با واقعیتِ ماتریس نرم‌شده
+        active_threshold = user_threshold
+        if active_threshold >= smooth_max:
+            active_threshold = smooth_max * 0.85  # تنظیم روی ۸۵ درصد ماکزیمم جدید
+            st.warning(f"⚠️ به دلیل اعمال فیلتر نرم‌ساز، آستانه شما به طور خودکار به {active_threshold:.3f} تعدیل شد.")
+
         lon_grid, lat_grid = np.meshgrid(lons, lats)
         
-        # 3. تابع استخراج خطوط
         def extract_lines(t_val):
             fig, ax = plt.subplots()
             cs = ax.contour(lon_grid, lat_grid, data_smoothed, levels=[t_val])
@@ -84,41 +96,51 @@ def generate_fronts_fallback(nc_path, output_geojson_path, threshold):
             for collection in cs.collections:
                 for path in collection.get_paths():
                     verts = path.vertices
-                    if len(verts) > 1: # فقط خطوطی که حداقل ۲ نقطه دارند
+                    if len(verts) > 1:
                         extracted.append(LineString(verts))
             plt.close(fig)
             return extracted
 
-        # تلاش اول با آستانه کاربر
-        lines = extract_lines(threshold)
+        # تلاش اول برای رسم خط
+        lines = extract_lines(active_threshold)
         
-        # تلاش‌های پشتیبان در صورت پیدا نشدن خط در تلاش اول
+        # سیستم پشتیبان بر اساس درصدهای ماکزیمم نرم‌شده
         if not lines:
-            st.warning(f"⚠️ در آستانه {threshold} خط ممتدی یافت نشد. سیستم در حال بررسی خودکار آستانه‌های پایین‌تر است...")
-            fallback_thresholds = [0.35, 0.25, 0.15, 0.05]
-            for fallback_t in fallback_thresholds:
-                if fallback_t >= max_val: continue
-                lines = extract_lines(fallback_t)
+            fallback_percents = [0.70, 0.50, 0.30, 0.10]
+            st.warning("⚠️ در آستانه اولیه خط ممتدی یافت نشد. در حال اسکن اعماق ماتریس...")
+            for pct in fallback_percents:
+                test_t = smooth_max * pct
+                if test_t <= 0: continue
+                lines = extract_lines(test_t)
                 if lines:
-                    st.success(f"✅ جبهه‌ها با موفقیت در آستانه جایگزین ({fallback_t}) پیدا شدند!")
-                    threshold = fallback_t
+                    st.success(f"✅ جبهه‌ها با موفقیت در آستانه جایگزین ({test_t:.3f}) پیدا شدند!")
+                    active_threshold = test_t
                     break
         
-        # ذخیره فایل برداری
         if lines:
             gdf_fronts = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
-            gdf_fronts['Threshold'] = threshold
-            gdf_fronts['Length_km'] = gdf_fronts.geometry.length * 111 # تخمین طول جبهه به کیلومتر
+            gdf_fronts['Threshold'] = active_threshold
+            # افزودن طول برای فیلتر کردن خطوط بسیار کوتاه (نویزها)
+            gdf_fronts = gdf_fronts.to_crs("EPSG:3857") # تبدیل به سیستم متریک موقت
+            gdf_fronts['Length_km'] = gdf_fronts.geometry.length / 1000
+            gdf_fronts = gdf_fronts.to_crs("EPSG:4326") # بازگشت به WGS84
             
-            os.makedirs(os.path.dirname(output_geojson_path), exist_ok=True)
-            gdf_fronts.to_file(output_geojson_path, driver="GeoJSON")
-            return True
+            # حذف خطوطی که از 1 کیلومتر کوتاه‌تر هستند (نویزهای نقطه‌ای)
+            gdf_fronts = gdf_fronts[gdf_fronts['Length_km'] > 1.0]
+            
+            if not gdf_fronts.empty:
+                os.makedirs(os.path.dirname(output_geojson_path), exist_ok=True)
+                gdf_fronts.to_file(output_geojson_path, driver="GeoJSON")
+                return True
+            else:
+                st.warning("⚠️ جبهه‌ها شناسایی شدند اما طول آن‌ها برای تشکیل یک زون صیادی پیوسته بسیار کوتاه بود.")
+                return False
         else:
-            st.warning("⚠️ ماتریس داده‌ها وجود دارد، اما پراکندگی پیکسل‌ها مانع از تشکیل یک جبهه پیوسته و معنادار در این محدوده شده است.")
+            st.error("⚠️ ماتریس داده کاملاً یکنواخت است و هیچ گرادیان (تغییرات) معناداری برای رسم خط در آن وجود ندارد.")
             return False
             
     except Exception as ex:
-        st.error(f"خطا در استخراج خطوط برداری از ماتریس: {ex}")
+        st.error(f"خطا در پردازش ماتریس: {ex}")
     return False
 
 # Session State Initialization
@@ -159,7 +181,7 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                             )
                             
                             target_geojson = os.path.join(output_dir, "pfz_fronts.geojson")
-                            fallback_success = generate_fronts_fallback(nc_out, target_geojson, threshold=pfz_threshold)
+                            fallback_success = generate_fronts_fallback(nc_out, target_geojson, user_threshold=pfz_threshold)
                             
                             if fallback_success:
                                 fronts_geojson = target_geojson
@@ -222,7 +244,7 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
                     name="PFZ Front Lines",
                     style_function=lambda x: {'color': '#FF0000', 'weight': 4.0, 'opacity': 1.0}
                 ).add_to(m)
-                st.success(f"🎯 تعداد {len(fronts_gdf)} خط جبهه استخراج و روی نقشه رسم شد.")
+                st.success(f"🎯 تعداد {len(fronts_gdf)} جبهه صیادی با موفقیت استخراج و رسم شد.")
         except Exception:
             pass
 
@@ -232,11 +254,8 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
     
     if fronts_gdf is not None and not fronts_gdf.empty:
         st.subheader("📋 جدول اطلاعات عوارض خطوط جبهه استخراج‌شده")
-        # فرمت‌بندی جدول برای نمایش بهتر
         display_gdf = fronts_gdf.drop(columns='geometry', errors='ignore')
         st.dataframe(display_gdf, use_container_width=True)
         
         with open(st.session_state.fronts_geojson, "rb") as file:
             st.download_button("📥 دانلود خطوط جبهه نهایی (GeoJSON)", data=file, file_name="pfz_front_lines.geojson", mime="application/geo+json")
-    else:
-        st.error("مشکل پابرجا ماند: هیچ خطی یافت نشد.")
