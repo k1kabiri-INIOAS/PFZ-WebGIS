@@ -62,7 +62,6 @@ uploaded_shapefile_zip = st.sidebar.file_uploader(
     type="zip"
 )
 
-# تغییر مهم: استفاده از tempfile برای جلوگیری از خطای Permission Denied در محیط ابری
 output_dir = os.path.join(tempfile.gettempdir(), "Data_Processed")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -85,15 +84,25 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
             return False
         
         da = ds["pfz_index"]
-        lat_name = 'lat' if 'lat' in da.dims else ('latitude' if 'latitude' in da.dims else da.dims[0])
-        lon_name = 'lon' if 'lon' in da.dims else ('longitude' if 'longitude' in da.dims else da.dims[1])
         
+        # شناسایی ایمن ابعاد مکانی صرف نظر از ترتیب آنها در xarray
+        lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
+        lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+        
+        if not lat_name or not lon_name:
+            record_error("ابعاد مکانی (lat/lon) به درستی در فایل NetCDF یافت نشد.")
+            return False
+            
         lats = ds[lat_name].values
         lons = ds[lon_name].values
-        data = da.values
         
-        if data.ndim == 3:
-            data = data[0, :, :]
+        # حذف ایمن ابعاد غیرمکانی (مانند time) در صورت وجود
+        if da.ndim > 2:
+            non_spatial_dims = [d for d in da.dims if d not in [lat_name, lon_name]]
+            for d in non_spatial_dims:
+                da = da.isel({d: 0})
+        
+        data = da.values
             
         valid_mask = ~np.isnan(data)
         if not valid_mask.any():
@@ -103,7 +112,6 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
         raw_max = float(np.nanmax(data))
         raw_min = float(np.nanmin(data))
         
-        # کنترل یکنواختی داده‌ها
         if np.isnan(raw_max) or raw_max == raw_min:
             record_error("داده‌های ماتریس یکنواخت هستند و امکان استخراج جبهه (کانتور) وجود ندارد.")
             return False
@@ -128,7 +136,6 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
             cs = ax.contour(lon_grid, lat_grid, data_smoothed, levels=[t_val])
             extracted = []
             
-            # تغییر مهم: منطق سازگار و تست‌شده با Matplotlib نسخه 3.8 به بالا
             for path in cs.get_paths():
                 for polygon in path.to_polygons():
                     if len(polygon) > 1:
@@ -248,13 +255,24 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
             ds_res = xr.open_dataset(st.session_state.nc_out)
             if "pfz_index" in ds_res:
                 pfz_da = ds_res["pfz_index"]
+                
+                # مدیریت ابعاد اضافی در زمان نمایش نقشه
+                if pfz_da.ndim > 2:
+                    lat_name_plot = next((d for d in pfz_da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
+                    lon_name_plot = next((d for d in pfz_da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+                    non_spatial_dims = [d for d in pfz_da.dims if d not in [lat_name_plot, lon_name_plot]]
+                    for d in non_spatial_dims:
+                        pfz_da = pfz_da.isel({d: 0})
+                
                 fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
                 ax.set_axis_off()
                 plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+                
                 pfz_da.plot.imshow(ax=ax, cmap="jet", alpha=0.5, add_colorbar=False)
                 
                 overlay_path = os.path.join(output_dir, "pfz_overlay.png")
-                fig.savefig(overlay_path, dpi=150, transparent=True, bbox_inches='tight', pad_inches=0)
+                # حذف bbox_inches='tight' جهت حفظ تطبیق مرزها با ImageOverlay
+                fig.savefig(overlay_path, dpi=150, transparent=True, pad_inches=0)
                 plt.close(fig)
                 
                 folium.raster_layers.ImageOverlay(
