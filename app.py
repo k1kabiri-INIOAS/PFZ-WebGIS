@@ -136,10 +136,11 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
             cs = ax.contour(lon_grid, lat_grid, data_smoothed, levels=[t_val])
             extracted = []
             
-            for path in cs.get_paths():
-                for polygon in path.to_polygons():
-                    if len(polygon) > 1:
-                        extracted.append(LineString(polygon))
+            # استفاده از ساختار جدید Matplotlib >= 3.8
+            for segs in cs.allsegs:
+                for poly in segs:
+                    if len(poly) > 1:
+                        extracted.append(LineString(poly))
             
             plt.close(fig)
             return extracted
@@ -184,19 +185,24 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
     if uploaded_shapefile_zip is None:
         st.error("لطفاً فایل فشرده شیپ‌فایل منطقه (.zip) را آپلود کنید.")
     else:
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                with zipfile.ZipFile(uploaded_shapefile_zip, 'r') as zip_ref:
-                    zip_ref.extractall(tmpdir)
-                
-                shp_files = [os.path.join(r, f) for r, d, files in os.walk(tmpdir) for f in files if f.endswith('.shp')]
-                
-                if not shp_files:
-                    record_error("فایل .shp در داخل فایل ZIP پیدا نشد.")
-                else:
-                    shapefile_path = shp_files[0]
+        with st.status("🚀 شروع فرآیند پردازش داده‌های مکانی...", expanded=True) as status:
+            try:
+                # مرحله ۱: استخراج شیپ‌فایل
+                st.write("در حال استخراج و خواندن فایل شیپ‌فایل منطقه...")
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    with zipfile.ZipFile(uploaded_shapefile_zip, 'r') as zip_ref:
+                        zip_ref.extractall(tmpdir)
                     
-                    with st.spinner("در حال دریافت داده‌های ماهواره‌ای..."):
+                    shp_files = [os.path.join(r, f) for r, d, files in os.walk(tmpdir) for f in files if f.endswith('.shp')]
+                    
+                    if not shp_files:
+                        record_error("فایل .shp در داخل فایل ZIP پیدا نشد.")
+                        st.error("فایل شیپ‌فایل یافت نشد.")
+                        status.update(label="پردازش متوقف شد", state="error")
+                    else:
+                        st.success("فایل منطقه با موفقیت بارگذاری شد.")
+                        shapefile_path = shp_files[0]
+                        
                         gdf = gpd.read_file(shapefile_path)
                         if gdf.crs is not None and gdf.crs != "EPSG:4326":
                             gdf = gdf.to_crs("EPSG:4326")
@@ -204,6 +210,8 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                         
                         os.makedirs(output_dir, exist_ok=True)
                         
+                        # مرحله ۲: دریافت داده‌های ماهواره‌ای
+                        st.write("در حال برقراری ارتباط با سرور و دریافت داده‌های SST و CHL...")
                         try:
                             sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
                         except Exception as fetch_ex:
@@ -211,30 +219,51 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                             sst_nc_path, chl_nc_path = None, None
                         
                         if sst_nc_path and chl_nc_path:
-                            with st.spinner("در حال پردازش مدل و استخراج جبهه‌ها..."):
-                                try:
-                                    nc_out, tif_out, fronts_geojson = process_pfz_pipeline(
-                                        shapefile_path, sst_nc_path, chl_nc_path, output_dir, sst_weight, chl_weight
-                                    )
-                                except Exception as proc_ex:
-                                    record_error("خطا در ماژول process_pfz_pipeline", proc_ex)
-                                    nc_out, fronts_geojson = None, None
+                            st.success("داده‌های ماهواره‌ای با موفقیت دریافت شدند.")
+                            
+                            # مرحله ۳: پردازش مدل
+                            st.write("در حال پردازش مدل و محاسبه شاخص PFZ...")
+                            try:
+                                nc_out, tif_out, fronts_geojson = process_pfz_pipeline(
+                                    shapefile_path, sst_nc_path, chl_nc_path, output_dir, sst_weight, chl_weight
+                                )
+                            except Exception as proc_ex:
+                                record_error("خطا در ماژول process_pfz_pipeline", proc_ex)
+                                nc_out, fronts_geojson = None, None
 
+                            if nc_out:
+                                st.success("مدل شاخص PFZ با موفقیت پردازش شد.")
+                                
+                                # مرحله ۴: استخراج جبهه‌ها
+                                st.write("در حال استخراج خطوط جبهه‌های حرارتی...")
                                 target_geojson = os.path.join(output_dir, "pfz_fronts.geojson")
                                 fallback_success = generate_fronts_fallback(nc_out, target_geojson, user_threshold=pfz_threshold)
                                 
                                 if fallback_success:
                                     fronts_geojson = target_geojson
+                                    st.success("جبهه‌های صیادی استخراج و فایل GeoJSON تولید شد.")
+                                else:
+                                    st.warning("پردازش پایان یافت اما هیچ جبهه‌ای استخراج نشد.")
                                 
+                                # نهایی‌سازی استیت‌ها
                                 st.session_state.analysis_done = True
                                 st.session_state.nc_out = nc_out
                                 st.session_state.fronts_geojson = fronts_geojson
                                 st.session_state.gdf = gdf
                                 st.session_state.minx, st.session_state.miny, st.session_state.maxx, st.session_state.maxy = minx, miny, maxx, maxy
+                                status.update(label="تمام مراحل پردازش با موفقیت به پایان رسید!", state="complete")
+                            else:
+                                st.error("خطا در خروجی‌های پردازش مدل رخ داد.")
+                                status.update(label="پردازش متوقف شد", state="error")
                         else:
+                            st.error("فایل‌های SST یا CHL دریافت نشدند (ارور سرور یا عدم وجود داده).")
                             record_error("فایل‌های SST یا CHL دریافت نشدند.")
-        except Exception as global_ex:
-            record_error("خطای کلی در جریان اجرای برنامه", global_ex)
+                            status.update(label="پردازش متوقف شد", state="error")
+                            
+            except Exception as global_ex:
+                record_error("خطای کلی در جریان اجرای برنامه", global_ex)
+                st.error(f"خطای سیستمی رخ داد: {global_ex}")
+                status.update(label="اجرای برنامه با خطا متوقف شد", state="error")
 
 if st.session_state.analysis_done and st.session_state.gdf is not None:
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه پس‌زمینه")
