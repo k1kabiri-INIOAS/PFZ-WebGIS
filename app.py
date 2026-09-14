@@ -60,17 +60,23 @@ def generate_fronts_fallback(nc_path, output_geojson_path, threshold):
             data = data[0, :, :]
             
         valid_data = data[~np.isnan(data)]
-        if len(valid_data) == 0:
-            st.warning("⚠️ داده‌های محاسباتی تماماً خالی (NaN) هستند. احتمالاً منطقه روی خشکی است.")
+        
+        # --- بخش دیباگ حرفه‌ای روی صفحه UI ---
+        st.info(f"📐 **ابعاد ماتریس داده‌های منطقه شما:** {data.shape[0]} در {data.shape[1]} پیکسل")
+        st.info(f"🔢 **تعداد کل پیکسل‌های معتبر (غیر ابری/غیر خشکی):** {len(valid_data)} پیکسل")
+        # ------------------------------------
+
+        if len(valid_data) < 10:
+            st.warning("⚠️ تعداد پیکسل‌های معتبر برای ترسیم خط جبهه بسیار کم است (کمتر از ۱۰ پیکسل). لطفاً شیپ‌فایل بزرگ‌تری انتخاب کنید یا از مناطق دورتر از ساحل استفاده کنید.")
             return False
             
         max_val = float(np.nanmax(data))
         st.info(f"📊 **حداکثر شاخص PFZ در این منطقه و تاریخ:** {max_val:.3f}")
         
-        # اصلاح هوشمند آستانه در صورتی که مقدار کاربر از ماکزیمم داده بیشتر باشد
-        if threshold >= max_val and max_val > 0:
-            dynamic_thresh = float(np.nanpercentile(valid_data, 90))
-            st.warning(f"⚠️ آستانه انتخابی ({threshold}) از حداکثر شاخص موجود بالاتر بود. آستانه به طور خودکار روی صدک ۹۰ (مقدار {dynamic_thresh:.3f}) تنظیم شد تا قوی‌ترین جبهه‌های موجود استخراج شوند.")
+        # اصلاح هوشمند آستانه
+        if threshold >= max_val and max_val > 0.05:
+            dynamic_thresh = float(np.nanpercentile(valid_data, 85)) # کاهش به صدک 85 برای اطمینان بیشتر
+            st.warning(f"⚠️ آستانه انتخابی ({threshold}) بالا بود. آستانه به طور خودکار روی مقدار {dynamic_thresh:.3f} تنظیم شد.")
             threshold = dynamic_thresh
 
         fig, ax = plt.subplots()
@@ -86,16 +92,15 @@ def generate_fronts_fallback(nc_path, output_geojson_path, threshold):
         
         if lines:
             gdf_fronts = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
-            # اضافه کردن یک ستون ویژگی برای نمایش در جدول
             gdf_fronts['Threshold'] = threshold
             os.makedirs(os.path.dirname(output_geojson_path), exist_ok=True)
             gdf_fronts.to_file(output_geojson_path, driver="GeoJSON")
             return True
         else:
-            st.warning("⚠️ حتی با وجود تنظیم آستانه، گرادیان کافی برای ترسیم خط جبهه در این منطقه یافت نشد.")
+            st.warning("⚠️ ماتریس داده‌ها وجود دارد، اما گرادیان (شیب تغییرات) آن‌قدر قوی نیست که بتوان یک خط ممتد به عنوان جبهه ترسیم کرد.")
             return False
     except Exception as ex:
-        st.error(f"خطا در استخراج خودکار جبهه‌ها: {ex}")
+        st.error(f"خطا در پردازش ماتریس: {ex}")
     return False
 
 # Session State
