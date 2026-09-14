@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import folium
 from shapely.geometry import LineString
 from streamlit_folium import st_folium
+import scipy.ndimage as ndimage
 from modules.fetcher import fetch_near_realtime_data
 from modules.processor import process_pfz_pipeline
 
@@ -59,51 +60,68 @@ def generate_fronts_fallback(nc_path, output_geojson_path, threshold):
         if data.ndim == 3:
             data = data[0, :, :]
             
-        valid_data = data[~np.isnan(data)]
-        
-        # --- بخش دیباگ حرفه‌ای روی صفحه UI ---
-        st.info(f"📐 **ابعاد ماتریس داده‌های منطقه شما:** {data.shape[0]} در {data.shape[1]} پیکسل")
-        st.info(f"🔢 **تعداد کل پیکسل‌های معتبر (غیر ابری/غیر خشکی):** {len(valid_data)} پیکسل")
-        # ------------------------------------
-
-        if len(valid_data) < 10:
-            st.warning("⚠️ تعداد پیکسل‌های معتبر برای ترسیم خط جبهه بسیار کم است (کمتر از ۱۰ پیکسل). لطفاً شیپ‌فایل بزرگ‌تری انتخاب کنید یا از مناطق دورتر از ساحل استفاده کنید.")
+        valid_mask = ~np.isnan(data)
+        if not valid_mask.any():
+            st.warning("⚠️ داده‌های محاسباتی تماماً خالی (NaN) هستند. احتمالاً منطقه روی خشکی است.")
             return False
             
         max_val = float(np.nanmax(data))
         st.info(f"📊 **حداکثر شاخص PFZ در این منطقه و تاریخ:** {max_val:.3f}")
         
-        # اصلاح هوشمند آستانه
-        if threshold >= max_val and max_val > 0.05:
-            dynamic_thresh = float(np.nanpercentile(valid_data, 85)) # کاهش به صدک 85 برای اطمینان بیشتر
-            st.warning(f"⚠️ آستانه انتخابی ({threshold}) بالا بود. آستانه به طور خودکار روی مقدار {dynamic_thresh:.3f} تنظیم شد.")
-            threshold = dynamic_thresh
+        # 1. نرم‌سازی (Smoothing) ماتریس برای رفع نویزهای پیکسلی و اتصال جبهه‌ها
+        data_filled = np.nan_to_num(data, nan=0.0)
+        data_smoothed = ndimage.gaussian_filter(data_filled, sigma=1.0)
+        data_smoothed[~valid_mask] = np.nan # برگرداندن ماسک خشکی تا روی ساحل خط نکشد
+        
+        # 2. ایجاد شبکه مختصات استاندارد
+        lon_grid, lat_grid = np.meshgrid(lons, lats)
+        
+        # 3. تابع استخراج خطوط
+        def extract_lines(t_val):
+            fig, ax = plt.subplots()
+            cs = ax.contour(lon_grid, lat_grid, data_smoothed, levels=[t_val])
+            extracted = []
+            for collection in cs.collections:
+                for path in collection.get_paths():
+                    verts = path.vertices
+                    if len(verts) > 1: # فقط خطوطی که حداقل ۲ نقطه دارند
+                        extracted.append(LineString(verts))
+            plt.close(fig)
+            return extracted
 
-        fig, ax = plt.subplots()
-        cs = ax.contour(lons, lats, data, levels=[threshold])
+        # تلاش اول با آستانه کاربر
+        lines = extract_lines(threshold)
         
-        lines = []
-        for collection in cs.collections:
-            for path in collection.get_paths():
-                verts = path.vertices
-                if len(verts) > 1:
-                    lines.append(LineString(verts))
-        plt.close(fig)
+        # تلاش‌های پشتیبان در صورت پیدا نشدن خط در تلاش اول
+        if not lines:
+            st.warning(f"⚠️ در آستانه {threshold} خط ممتدی یافت نشد. سیستم در حال بررسی خودکار آستانه‌های پایین‌تر است...")
+            fallback_thresholds = [0.35, 0.25, 0.15, 0.05]
+            for fallback_t in fallback_thresholds:
+                if fallback_t >= max_val: continue
+                lines = extract_lines(fallback_t)
+                if lines:
+                    st.success(f"✅ جبهه‌ها با موفقیت در آستانه جایگزین ({fallback_t}) پیدا شدند!")
+                    threshold = fallback_t
+                    break
         
+        # ذخیره فایل برداری
         if lines:
             gdf_fronts = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
             gdf_fronts['Threshold'] = threshold
+            gdf_fronts['Length_km'] = gdf_fronts.geometry.length * 111 # تخمین طول جبهه به کیلومتر
+            
             os.makedirs(os.path.dirname(output_geojson_path), exist_ok=True)
             gdf_fronts.to_file(output_geojson_path, driver="GeoJSON")
             return True
         else:
-            st.warning("⚠️ ماتریس داده‌ها وجود دارد، اما گرادیان (شیب تغییرات) آن‌قدر قوی نیست که بتوان یک خط ممتد به عنوان جبهه ترسیم کرد.")
+            st.warning("⚠️ ماتریس داده‌ها وجود دارد، اما پراکندگی پیکسل‌ها مانع از تشکیل یک جبهه پیوسته و معنادار در این محدوده شده است.")
             return False
+            
     except Exception as ex:
-        st.error(f"خطا در پردازش ماتریس: {ex}")
+        st.error(f"خطا در استخراج خطوط برداری از ماتریس: {ex}")
     return False
 
-# Session State
+# Session State Initialization
 for key in ["analysis_done", "nc_out", "tif_out", "fronts_geojson", "gdf", "minx", "miny", "maxx", "maxy"]:
     if key not in st.session_state:
         st.session_state[key] = None if key != "analysis_done" else False
@@ -140,7 +158,6 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                                 shapefile_path, sst_nc_path, chl_nc_path, output_dir, sst_weight, chl_weight
                             )
                             
-                            # فراخوانی مکانیسم پشتیبان با آستانه متغیر کاربر
                             target_geojson = os.path.join(output_dir, "pfz_fronts.geojson")
                             fallback_success = generate_fronts_fallback(nc_out, target_geojson, threshold=pfz_threshold)
                             
@@ -192,7 +209,7 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
                     opacity=0.6,
                     name="PFZ Index Heatmap"
                 ).add_to(m)
-        except Exception as e:
+        except Exception:
             pass
 
     fronts_gdf = None
@@ -203,9 +220,9 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
                 folium.GeoJson(
                     fronts_gdf,
                     name="PFZ Front Lines",
-                    style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 0.9}
+                    style_function=lambda x: {'color': '#FF0000', 'weight': 4.0, 'opacity': 1.0}
                 ).add_to(m)
-                st.success(f"✅ تعداد {len(fronts_gdf)} خط جبهه استخراج و روی نقشه رسم شد.")
+                st.success(f"🎯 تعداد {len(fronts_gdf)} خط جبهه استخراج و روی نقشه رسم شد.")
         except Exception:
             pass
 
@@ -215,9 +232,11 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
     
     if fronts_gdf is not None and not fronts_gdf.empty:
         st.subheader("📋 جدول اطلاعات عوارض خطوط جبهه استخراج‌شده")
-        st.dataframe(fronts_gdf.drop(columns='geometry', errors='ignore'), use_container_width=True)
+        # فرمت‌بندی جدول برای نمایش بهتر
+        display_gdf = fronts_gdf.drop(columns='geometry', errors='ignore')
+        st.dataframe(display_gdf, use_container_width=True)
         
         with open(st.session_state.fronts_geojson, "rb") as file:
             st.download_button("📥 دانلود خطوط جبهه نهایی (GeoJSON)", data=file, file_name="pfz_front_lines.geojson", mime="application/geo+json")
     else:
-        st.warning("به دلیل نبود گرادیان کافی (یا آستانه بالا)، خطوط جبهه در خروجی مدل تشکیل نشد و جدول اطلاعات خالی است. لطفاً 'آستانه حساسیت جبهه‌ها' را از منوی سمت چپ کاهش داده و مجدداً تحلیل را اجرا کنید.")
+        st.error("مشکل پابرجا ماند: هیچ خطی یافت نشد.")
