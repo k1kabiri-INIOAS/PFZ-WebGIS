@@ -29,8 +29,11 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
+# مقداردهی متغیرهای Session State[cite: 4]
 if "error_logs" not in st.session_state:
     st.session_state.error_logs = []
+if "process_logs" not in st.session_state:
+    st.session_state.process_logs = []  # برای ذخیره و نمایش دائمی پیغام‌های موفقیت/وضعیت
 if "analysis_done" not in st.session_state:
     st.session_state.analysis_done = False
 for key in ["nc_out", "tif_out", "fronts_geojson", "gdf", "minx", "miny", "maxx", "maxy"]:
@@ -45,8 +48,15 @@ def record_error(msg, exc=None):
     logging.error(full_msg)
     st.session_state.error_logs.append(full_msg)
 
+# تابع کمکی برای ثبت و لاگ کردن همزمان در Status و Session State
+def log_process(msg_type, msg_text, status_obj=None):
+    st.session_state.process_logs.append((msg_type, msg_text))
+    if status_obj:
+        status_obj.write(msg_text)
+
 st.title("🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ)")
 
+# نمایش خطاهای سیستمی[cite: 4]
 if st.session_state.error_logs:
     st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است:")
     all_logs_str = "\n".join(st.session_state.error_logs)
@@ -62,6 +72,7 @@ uploaded_shapefile_zip = st.sidebar.file_uploader(
     type="zip"
 )
 
+# استفاده از مسیر موقت و ایمن برای جلوگیری از خطای Permission Denied[cite: 4]
 output_dir = os.path.join(tempfile.gettempdir(), "Data_Processed")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -85,7 +96,7 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
         
         da = ds["pfz_index"]
         
-        # شناسایی ایمن ابعاد مکانی صرف نظر از ترتیب آنها در xarray
+        # شناسایی ایمن ابعاد مکانی صرف نظر از ترتیب آنها[cite: 4]
         lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
         lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
         
@@ -96,7 +107,7 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
         lats = ds[lat_name].values
         lons = ds[lon_name].values
         
-        # حذف ایمن ابعاد غیرمکانی (مانند time) در صورت وجود
+        # حذف ایمن ابعاد غیرمکانی (مانند time) در صورت وجود[cite: 4]
         if da.ndim > 2:
             non_spatial_dims = [d for d in da.dims if d not in [lat_name, lon_name]]
             for d in non_spatial_dims:
@@ -123,8 +134,6 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
         valid_smoothed = data_smoothed[valid_mask]
         smooth_max = float(np.nanmax(valid_smoothed))
         
-        print(f"[PFZ-INFO] Raw Max: {raw_max:.3f} | Smooth Max: {smooth_max:.3f}", flush=True)
-        
         active_threshold = user_threshold
         if active_threshold >= smooth_max:
             active_threshold = smooth_max * 0.85
@@ -136,7 +145,7 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
             cs = ax.contour(lon_grid, lat_grid, data_smoothed, levels=[t_val])
             extracted = []
             
-            # استفاده از ساختار جدید Matplotlib >= 3.8
+            # استفاده از ساختار جدید Matplotlib >= 3.8 جهت جلوگیری از خطای collections[cite: 4]
             for segs in cs.allsegs:
                 for poly in segs:
                     if len(poly) > 1:
@@ -174,7 +183,7 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
                 record_error("خطوط جبهه یافت شدند اما همگی کوتاه‌تر از 0.5 کیلومتر بوده و فیلتر شدند.")
                 return False
         else:
-            record_error(f"هیچ خط کانتوری در آستانه‌های مختلف پیدا نشد. Smooth Max: {smooth_max}")
+            record_error(f"هیچ خط کانتوری در آستانه‌های مختلف پیدا نشد.")
             return False
             
     except Exception as ex:
@@ -185,10 +194,11 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
     if uploaded_shapefile_zip is None:
         st.error("لطفاً فایل فشرده شیپ‌فایل منطقه (.zip) را آپلود کنید.")
     else:
+        st.session_state.process_logs = []  # پاک کردن لاگ‌های قبلی
         with st.status("🚀 شروع فرآیند پردازش داده‌های مکانی...", expanded=True) as status:
             try:
                 # مرحله ۱: استخراج شیپ‌فایل
-                st.write("در حال استخراج و خواندن فایل شیپ‌فایل منطقه...")
+                log_process("info", "در حال استخراج و خواندن فایل شیپ‌فایل منطقه...", status)
                 with tempfile.TemporaryDirectory() as tmpdir:
                     with zipfile.ZipFile(uploaded_shapefile_zip, 'r') as zip_ref:
                         zip_ref.extractall(tmpdir)
@@ -197,10 +207,10 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                     
                     if not shp_files:
                         record_error("فایل .shp در داخل فایل ZIP پیدا نشد.")
-                        st.error("فایل شیپ‌فایل یافت نشد.")
+                        log_process("error", "فایل شیپ‌فایل یافت نشد.", status)
                         status.update(label="پردازش متوقف شد", state="error")
                     else:
-                        st.success("فایل منطقه با موفقیت بارگذاری شد.")
+                        log_process("success", "فایل منطقه با موفقیت بارگذاری شد.", status)
                         shapefile_path = shp_files[0]
                         
                         gdf = gpd.read_file(shapefile_path)
@@ -208,10 +218,8 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                             gdf = gdf.to_crs("EPSG:4326")
                         minx, miny, maxx, maxy = gdf.total_bounds
                         
-                        os.makedirs(output_dir, exist_ok=True)
-                        
                         # مرحله ۲: دریافت داده‌های ماهواره‌ای
-                        st.write("در حال برقراری ارتباط با سرور و دریافت داده‌های SST و CHL...")
+                        log_process("info", "در حال برقراری ارتباط با سرور و دریافت داده‌های SST و CHL...", status)
                         try:
                             sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
                         except Exception as fetch_ex:
@@ -219,10 +227,10 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                             sst_nc_path, chl_nc_path = None, None
                         
                         if sst_nc_path and chl_nc_path:
-                            st.success("داده‌های ماهواره‌ای با موفقیت دریافت شدند.")
+                            log_process("success", "داده‌های ماهواره‌ای با موفقیت دریافت شدند.", status)
                             
                             # مرحله ۳: پردازش مدل
-                            st.write("در حال پردازش مدل و محاسبه شاخص PFZ...")
+                            log_process("info", "در حال پردازش مدل و محاسبه شاخص PFZ...", status)
                             try:
                                 nc_out, tif_out, fronts_geojson = process_pfz_pipeline(
                                     shapefile_path, sst_nc_path, chl_nc_path, output_dir, sst_weight, chl_weight
@@ -232,18 +240,18 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                                 nc_out, fronts_geojson = None, None
 
                             if nc_out:
-                                st.success("مدل شاخص PFZ با موفقیت پردازش شد.")
+                                log_process("success", "مدل شاخص PFZ با موفقیت پردازش شد.", status)
                                 
                                 # مرحله ۴: استخراج جبهه‌ها
-                                st.write("در حال استخراج خطوط جبهه‌های حرارتی...")
+                                log_process("info", "در حال استخراج خطوط جبهه‌های حرارتی...", status)
                                 target_geojson = os.path.join(output_dir, "pfz_fronts.geojson")
                                 fallback_success = generate_fronts_fallback(nc_out, target_geojson, user_threshold=pfz_threshold)
                                 
                                 if fallback_success:
                                     fronts_geojson = target_geojson
-                                    st.success("جبهه‌های صیادی استخراج و فایل GeoJSON تولید شد.")
+                                    log_process("success", "جبهه‌های صیادی استخراج و فایل GeoJSON تولید شد.", status)
                                 else:
-                                    st.warning("پردازش پایان یافت اما هیچ جبهه‌ای استخراج نشد.")
+                                    log_process("warning", "پردازش پایان یافت اما هیچ جبهه‌ای استخراج نشد.", status)
                                 
                                 # نهایی‌سازی استیت‌ها
                                 st.session_state.analysis_done = True
@@ -253,17 +261,30 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                                 st.session_state.minx, st.session_state.miny, st.session_state.maxx, st.session_state.maxy = minx, miny, maxx, maxy
                                 status.update(label="تمام مراحل پردازش با موفقیت به پایان رسید!", state="complete")
                             else:
-                                st.error("خطا در خروجی‌های پردازش مدل رخ داد.")
+                                log_process("error", "خطا در خروجی‌های پردازش مدل رخ داد.", status)
                                 status.update(label="پردازش متوقف شد", state="error")
                         else:
-                            st.error("فایل‌های SST یا CHL دریافت نشدند (ارور سرور یا عدم وجود داده).")
+                            log_process("error", "فایل‌های SST یا CHL دریافت نشدند (ارور سرور یا عدم وجود داده).", status)
                             record_error("فایل‌های SST یا CHL دریافت نشدند.")
                             status.update(label="پردازش متوقف شد", state="error")
                             
             except Exception as global_ex:
                 record_error("خطای کلی در جریان اجرای برنامه", global_ex)
-                st.error(f"خطای سیستمی رخ داد: {global_ex}")
+                log_process("error", f"خطای سیستمی رخ داد: {global_ex}", status)
                 status.update(label="اجرای برنامه با خطا متوقف شد", state="error")
+
+# نمایش دائمی پیغام‌های مراحل پردازش پس از اتمام (محو نمی‌شوند)
+if st.session_state.process_logs:
+    with st.expander("📝 گزارش مراحل پردازش", expanded=True):
+        for msg_type, text in st.session_state.process_logs:
+            if msg_type == "success":
+                st.success(text)
+            elif msg_type == "error":
+                st.error(text)
+            elif msg_type == "warning":
+                st.warning(text)
+            else:
+                st.info(text)
 
 if st.session_state.analysis_done and st.session_state.gdf is not None:
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه پس‌زمینه")
@@ -285,7 +306,6 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
             if "pfz_index" in ds_res:
                 pfz_da = ds_res["pfz_index"]
                 
-                # مدیریت ابعاد اضافی در زمان نمایش نقشه
                 if pfz_da.ndim > 2:
                     lat_name_plot = next((d for d in pfz_da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
                     lon_name_plot = next((d for d in pfz_da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
@@ -300,7 +320,6 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
                 pfz_da.plot.imshow(ax=ax, cmap="jet", alpha=0.5, add_colorbar=False)
                 
                 overlay_path = os.path.join(output_dir, "pfz_overlay.png")
-                # حذف bbox_inches='tight' جهت حفظ تطبیق مرزها با ImageOverlay
                 fig.savefig(overlay_path, dpi=150, transparent=True, pad_inches=0)
                 plt.close(fig)
                 
