@@ -1,197 +1,284 @@
 import os
+import sys
 import tempfile
-import numpy as np
-import pandas as pd
-import xarray as xr
-import matplotlib.pyplot as plt
+import zipfile
+import traceback
+import logging
 import streamlit as st
+import geopandas as gpd
+import xarray as xr
+import numpy as np
+import matplotlib.pyplot as plt
+import folium
+from shapely.geometry import LineString
+from streamlit_folium import st_folium
+import scipy.ndimage as ndimage
+import warnings
 
-# ==========================================
-# 1. تنظیمات اولیه صفحه
-# ==========================================
-st.set_page_config(
-    page_title="سامانه شناساگر مناطق مستعد صید (PFZ)",
-    page_icon="🌊",
-    layout="wide"
+from modules.fetcher import fetch_near_realtime_data
+from modules.processor import process_pfz_pipeline
+
+warnings.filterwarnings("ignore")
+plt.switch_backend('Agg')
+
+st.set_page_config(page_title="PFZ Management System", layout="wide")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-st.title("🌊 سامانه پایش و استخراج جبهه‌های حرارتی اقیانوسی (PFZ)")
-st.caption("پردازش داده‌های سنجش از دور دریایی (SST/CHL) و بارگذاری نقشه‌های تعاملی")
+if "error_logs" not in st.session_state:
+    st.session_state.error_logs = []
+if "analysis_done" not in st.session_state:
+    st.session_state.analysis_done = False
+for key in ["nc_out", "tif_out", "fronts_geojson", "gdf", "minx", "miny", "maxx", "maxy"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
 
-# ==========================================
-# 2. مدیریت Session State
-# ==========================================
-if "ds" not in st.session_state:
-    st.session_state.ds = None
-if "fronts_df" not in st.session_state:
-    st.session_state.fronts_df = None
+def record_error(msg, exc=None):
+    full_msg = msg
+    if exc:
+        full_msg += f"\n{traceback.format_exc()}"
+    print(f"[PFZ-LOG-ERROR] {full_msg}", flush=True)
+    logging.error(full_msg)
+    st.session_state.error_logs.append(full_msg)
 
-# ==========================================
-# 3. تابع اصلی استخراج جبهه‌ها (Fallback/Core)
-# ==========================================
-def generate_fronts_fallback(ds, var_name="sst", threshold=None):
-    """
-    استخراج خطوط کانتور جبهه‌های حرارتی با رفع خطاهای Matplotlib 3.8+ و ابعاد مکانی
-    """
+st.title("🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ)")
+
+if st.session_state.error_logs:
+    st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است:")
+    all_logs_str = "\n".join(st.session_state.error_logs)
+    st.code(all_logs_str, language="text")
+    if st.button("🗑️ پاک‌کردن تاریخچه خطاها"):
+        st.session_state.error_logs = []
+        st.rerun()
+
+st.sidebar.header("تنظیمات پردازش و مدل")
+
+uploaded_shapefile_zip = st.sidebar.file_uploader(
+    "آپلود فایل فشرده شیپ‌فایل منطقه (.zip)", 
+    type="zip"
+)
+
+# تغییر مهم: استفاده از tempfile برای جلوگیری از خطای Permission Denied در محیط ابری
+output_dir = os.path.join(tempfile.gettempdir(), "Data_Processed")
+os.makedirs(output_dir, exist_ok=True)
+
+st.sidebar.subheader("پارامترهای مدل")
+sst_weight = st.sidebar.slider("وزن جبهه‌های حرارتی SST", 0.0, 1.0, 0.5, 0.1)
+chl_weight = st.sidebar.slider("وزن کلروفیل-آ (Chlorophyll-a)", 0.0, 1.0, 0.5, 0.1)
+
+st.sidebar.subheader("تنظیمات استخراج عوارض")
+pfz_threshold = st.sidebar.slider("آستانه حساسیت جبهه‌ها (Threshold)", 0.1, 1.0, 0.45, 0.05)
+
+def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
     try:
-        # 3.1. استانداردسازی نام ابعاد مکانی
-        rename_dict = {}
-        if 'longitude' in ds.dims:
-            rename_dict['longitude'] = 'lon'
-        if 'latitude' in ds.dims:
-            rename_dict['latitude'] = 'lat'
-        if rename_dict:
-            ds = ds.rename(rename_dict)
+        if not nc_path or not os.path.exists(nc_path):
+            record_error(f"فایل NetCDF وجود ندارد: {nc_path}")
+            return False
+
+        ds = xr.open_dataset(nc_path)
+        if "pfz_index" not in ds:
+            record_error("متغیر 'pfz_index' در فایل NetCDF یافت نشد.")
+            return False
+        
+        da = ds["pfz_index"]
+        lat_name = 'lat' if 'lat' in da.dims else ('latitude' if 'latitude' in da.dims else da.dims[0])
+        lon_name = 'lon' if 'lon' in da.dims else ('longitude' if 'longitude' in da.dims else da.dims[1])
+        
+        lats = ds[lat_name].values
+        lons = ds[lon_name].values
+        data = da.values
+        
+        if data.ndim == 3:
+            data = data[0, :, :]
             
-        # تنظیم ابعاد فضایی برای rioxarray در صورت نیاز
-        if hasattr(ds, 'rio'):
-            x_name = 'lon' if 'lon' in ds.dims else ('x' if 'x' in ds.dims else None)
-            y_name = 'lat' if 'lat' in ds.dims else ('y' if 'y' in ds.dims else None)
-            if x_name and y_name:
-                ds = ds.rio.set_spatial_dims(x_dim=x_name, y_dim=y_name, inplace=True)
-
-        # استخراج آرایه دو بعدی
-        data_array = ds[var_name]
-        if 'time' in data_array.dims:
-            data_array = data_array.isel(time=0)
+        valid_mask = ~np.isnan(data)
+        if not valid_mask.any():
+            record_error("ماتریس محاسباتی pfz_index کلاً از داده‌های NaN تشکیل شده است.")
+            return False
             
-        lons = data_array['lon'].values if 'lon' in data_array.dims else data_array['x'].values
-        lats = data_array['lat'].values if 'lat' in data_array.dims else data_array['y'].values
-        Z = data_array.values
-
-        # 3.2. بررسی سلامت داده‌ها
-        z_min = np.nanmin(Z)
-        z_max = np.nanmax(Z)
+        raw_max = float(np.nanmax(data))
+        raw_min = float(np.nanmin(data))
         
-        if np.isnan(z_min) or np.isnan(z_max) or z_min == z_max:
-            st.warning("⚠️ داده‌های ورودی یکنواخت یا تماماً NaN هستند؛ امکان استخراج جبهه وجود ندارد.")
-            return None
+        # کنترل یکنواختی داده‌ها
+        if np.isnan(raw_max) or raw_max == raw_min:
+            record_error("داده‌های ماتریس یکنواخت هستند و امکان استخراج جبهه (کانتور) وجود ندارد.")
+            return False
 
-        # تعیین آستانه پویا در صورت عدم تعیین توسط کاربر
-        if threshold is None or threshold < z_min or threshold > z_max:
-            threshold = float(z_min + 0.5 * (z_max - z_min))
-
-        # 3.3. استخراج خطوط کانتور (سازگار با Matplotlib 3.8+)
-        X, Y = np.meshgrid(lons, lats)
+        data_filled = np.nan_to_num(data, nan=0.0)
+        data_smoothed = ndimage.gaussian_filter(data_filled, sigma=1.0)
+        data_smoothed[~valid_mask] = np.nan
         
-        fig, ax = plt.subplots()
-        cs = ax.contour(X, Y, Z, levels=[threshold])
+        valid_smoothed = data_smoothed[valid_mask]
+        smooth_max = float(np.nanmax(valid_smoothed))
         
-        lines = []
-        # استفاده از get_paths() به جای cs.collections
-        for path in cs.get_paths():
-            for polygon in path.to_polygons():
-                if len(polygon) > 0:
-                    lines.append(polygon)
-                    
-        plt.close(fig)
+        print(f"[PFZ-INFO] Raw Max: {raw_max:.3f} | Smooth Max: {smooth_max:.3f}", flush=True)
+        
+        active_threshold = user_threshold
+        if active_threshold >= smooth_max:
+            active_threshold = smooth_max * 0.85
 
+        lon_grid, lat_grid = np.meshgrid(lons, lats)
+        
+        def extract_lines(t_val):
+            fig, ax = plt.subplots()
+            cs = ax.contour(lon_grid, lat_grid, data_smoothed, levels=[t_val])
+            extracted = []
+            
+            # تغییر مهم: منطق سازگار و تست‌شده با Matplotlib نسخه 3.8 به بالا
+            for path in cs.get_paths():
+                for polygon in path.to_polygons():
+                    if len(polygon) > 1:
+                        extracted.append(LineString(polygon))
+            
+            plt.close(fig)
+            return extracted
+
+        lines = extract_lines(active_threshold)
+        
         if not lines:
-            st.warning(f"⚠️ هیچ خط کانتوری در آستانه {threshold:.2f} پیدا نشد.")
-            return None
+            fallback_percents = [0.70, 0.50, 0.30, 0.10]
+            for pct in fallback_percents:
+                test_t = smooth_max * pct
+                if test_t <= 0: continue
+                lines = extract_lines(test_t)
+                if lines:
+                    active_threshold = test_t
+                    break
+        
+        if lines:
+            gdf_fronts = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
+            gdf_fronts['Threshold'] = active_threshold
+            gdf_fronts = gdf_fronts.to_crs("EPSG:3857")
+            gdf_fronts['Length_km'] = gdf_fronts.geometry.length / 1000
+            gdf_fronts = gdf_fronts.to_crs("EPSG:4326")
+            
+            gdf_fronts = gdf_fronts[gdf_fronts['Length_km'] > 0.5]
+            
+            if not gdf_fronts.empty:
+                os.makedirs(os.path.dirname(output_geojson_path), exist_ok=True)
+                gdf_fronts.to_file(output_geojson_path, driver="GeoJSON")
+                return True
+            else:
+                record_error("خطوط جبهه یافت شدند اما همگی کوتاه‌تر از 0.5 کیلومتر بوده و فیلتر شدند.")
+                return False
+        else:
+            record_error(f"هیچ خط کانتوری در آستانه‌های مختلف پیدا نشد. Smooth Max: {smooth_max}")
+            return False
+            
+    except Exception as ex:
+        record_error("خطای غیرمنتظره در generate_fronts_fallback", ex)
+    return False
 
-        # 3.4. تبدیل خطوط به DataFrame
-        front_points = []
-        for line_idx, line in enumerate(lines):
-            for pt in line:
-                front_points.append({
-                    'line_id': line_idx,
-                    'lon': pt[0],
-                    'lat': pt[1],
-                    'threshold_val': threshold
-                })
+if st.sidebar.button("دریافت داده‌های به‌روز و اجرای تحلیل"):
+    if uploaded_shapefile_zip is None:
+        st.error("لطفاً فایل فشرده شیپ‌فایل منطقه (.zip) را آپلود کنید.")
+    else:
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with zipfile.ZipFile(uploaded_shapefile_zip, 'r') as zip_ref:
+                    zip_ref.extractall(tmpdir)
                 
-        df_fronts = pd.DataFrame(front_points)
+                shp_files = [os.path.join(r, f) for r, d, files in os.walk(tmpdir) for f in files if f.endswith('.shp')]
+                
+                if not shp_files:
+                    record_error("فایل .shp در داخل فایل ZIP پیدا نشد.")
+                else:
+                    shapefile_path = shp_files[0]
+                    
+                    with st.spinner("در حال دریافت داده‌های ماهواره‌ای..."):
+                        gdf = gpd.read_file(shapefile_path)
+                        if gdf.crs is not None and gdf.crs != "EPSG:4326":
+                            gdf = gdf.to_crs("EPSG:4326")
+                        minx, miny, maxx, maxy = gdf.total_bounds
+                        
+                        os.makedirs(output_dir, exist_ok=True)
+                        
+                        try:
+                            sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
+                        except Exception as fetch_ex:
+                            record_error("خطا در ماژول fetch_near_realtime_data", fetch_ex)
+                            sst_nc_path, chl_nc_path = None, None
+                        
+                        if sst_nc_path and chl_nc_path:
+                            with st.spinner("در حال پردازش مدل و استخراج جبهه‌ها..."):
+                                try:
+                                    nc_out, tif_out, fronts_geojson = process_pfz_pipeline(
+                                        shapefile_path, sst_nc_path, chl_nc_path, output_dir, sst_weight, chl_weight
+                                    )
+                                except Exception as proc_ex:
+                                    record_error("خطا در ماژول process_pfz_pipeline", proc_ex)
+                                    nc_out, fronts_geojson = None, None
 
-        # 3.5. ذخیره‌سازی ایمن خروجی در پوشه موقت (/tmp)
-        output_dir = tempfile.gettempdir()
-        output_path = os.path.join(output_dir, "extracted_fronts.csv")
-        df_fronts.to_csv(output_path, index=False)
-        
-        return df_fronts
+                                target_geojson = os.path.join(output_dir, "pfz_fronts.geojson")
+                                fallback_success = generate_fronts_fallback(nc_out, target_geojson, user_threshold=pfz_threshold)
+                                
+                                if fallback_success:
+                                    fronts_geojson = target_geojson
+                                
+                                st.session_state.analysis_done = True
+                                st.session_state.nc_out = nc_out
+                                st.session_state.fronts_geojson = fronts_geojson
+                                st.session_state.gdf = gdf
+                                st.session_state.minx, st.session_state.miny, st.session_state.maxx, st.session_state.maxy = minx, miny, maxx, maxy
+                        else:
+                            record_error("فایل‌های SST یا CHL دریافت نشدند.")
+        except Exception as global_ex:
+            record_error("خطای کلی در جریان اجرای برنامه", global_ex)
 
-    except Exception as e:
-        st.error(f"❌ خطا در پردازش جبهه‌ها: {str(e)}")
-        return None
-
-# ==========================================
-# 4. نوار کناری (Sidebar) - دریافت ورودی‌ها
-# ==========================================
-st.sidebar.header("⚙️ تنظیمات ورودی")
-
-uploaded_file = st.sidebar.file_uploader(
-    "فایل NetCDF را بارگذاری کنید (.nc یا .nc4)", 
-    type=["nc", "nc4"]
-)
-
-if uploaded_file is not None:
-    try:
-        # ذخیره موقت فایل آپلود شده برای خواندن توسط xarray
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".nc") as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_path = tmp_file.name
-            
-        st.session_state.ds = xr.open_dataset(tmp_path)
-        st.sidebar.success("فایل با موفقیت بارگذاری شد.")
-    except Exception as e:
-        st.sidebar.error(f"خطا در باز کردن فایل NetCDF: {e}")
-
-# ==========================================
-# 5. پنل اصلی پردازش و نمایش
-# ==========================================
-if st.session_state.ds is not None:
-    ds = st.session_state.ds
+if st.session_state.analysis_done and st.session_state.gdf is not None:
+    st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه پس‌زمینه")
     
-    # انتخاب متغیر
-    var_options = list(ds.data_vars.keys())
-    selected_var = st.selectbox("متغیر مورد نظر جهت تحلیل را انتخاب کنید:", var_options)
-    
-    # محاسبه دامنه تغییرات متغیر انتخاب شده
-    var_data = ds[selected_var].values
-    min_val = float(np.nanmin(var_data))
-    max_val = float(np.nanmax(var_data))
-    default_thresh = float(min_val + 0.5 * (max_val - min_val))
-    
-    st.info(f"📊 محدوده متغیر {selected_var}: حداقل = {min_val:.2f} | حداکثر = {max_val:.2f}")
-
-    # انتخاب مقدار آستانه
-    threshold_val = st.slider(
-        "مقدار آستانه (Threshold) برای کانتورگیری:",
-        min_value=min_val,
-        max_value=max_val,
-        value=default_thresh,
-        step=0.1
+    m = folium.Map(
+        location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
+        zoom_start=6, tiles="OpenStreetMap"
     )
+    
+    folium.GeoJson(
+        st.session_state.gdf,
+        name="Region Boundary",
+        style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
+    ).add_to(m)
+    
+    if st.session_state.nc_out and os.path.exists(st.session_state.nc_out):
+        try:
+            ds_res = xr.open_dataset(st.session_state.nc_out)
+            if "pfz_index" in ds_res:
+                pfz_da = ds_res["pfz_index"]
+                fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
+                ax.set_axis_off()
+                plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+                pfz_da.plot.imshow(ax=ax, cmap="jet", alpha=0.5, add_colorbar=False)
+                
+                overlay_path = os.path.join(output_dir, "pfz_overlay.png")
+                fig.savefig(overlay_path, dpi=150, transparent=True, bbox_inches='tight', pad_inches=0)
+                plt.close(fig)
+                
+                folium.raster_layers.ImageOverlay(
+                    image=overlay_path,
+                    bounds=[[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]],
+                    opacity=0.6,
+                    name="PFZ Index Heatmap"
+                ).add_to(m)
+        except Exception as img_ex:
+            record_error("خطا در رندر تصویر Heatmap روی نقشه", img_ex)
 
-    # دکمه اجرای استخراج جبهه
-    if st.button("🚀 پردازش و استخراج جبهه‌های حرارتی", type="primary"):
-        with st.spinner("در حال استخراج جبهه‌ها و تولید خروجی..."):
-            df_result = generate_fronts_fallback(ds, var_name=selected_var, threshold=threshold_val)
-            st.session_state.fronts_df = df_result
+    if st.session_state.fronts_geojson and os.path.exists(st.session_state.fronts_geojson):
+        try:
+            fronts_gdf = gpd.read_file(st.session_state.fronts_geojson)
+            if not fronts_gdf.empty:
+                folium.GeoJson(
+                    fronts_gdf,
+                    name="PFZ Front Lines",
+                    style_function=lambda x: {'color': '#FF0000', 'weight': 4.0, 'opacity': 1.0}
+                ).add_to(m)
+                st.success(f"🎯 تعداد {len(fronts_gdf)} جبهه صیادی با موفقیت استخراج و رسم شد.")
+        except Exception as geojson_ex:
+            record_error("خطا در خواندن فایل GeoJSON جبهه‌ها", geojson_ex)
 
-    # نمایش نتائج
-    if st.session_state.fronts_df is not None:
-        df_fronts = st.session_state.fronts_df
-        st.subheader("📌 جبهه‌های استخراج‌شده")
-        
-        col1, col2 = st.subplots([2, 1])
-        
-        with col1:
-            # نمایش پیش‌نمایش نقشه نقطه به نقطه بر اساس Lat/Lon
-            st.map(df_fronts[['lat', 'lon']])
-            
-        with col2:
-            st.write(f"**تعداد نقاط جبهه:** {len(df_fronts)}")
-            st.write(f"**تعداد خطوط تفکیک‌شده:** {df_fronts['line_id'].nunique()}")
-            
-            # ارائه لینک دانلود فایل CSV
-            csv_data = df_fronts.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 دانلود نقشه جبهه‌ها (CSV)",
-                data=csv_data,
-                file_name="pfz_fronts_output.csv",
-                mime="text/csv"
-            )
-
-else:
-    st.info("👋 برای شروع، لطفاً یک فایل NetCDF حاوی داده‌های اقیانوسی را از نوار کناری بارگذاری کنید.")
+    m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
+    folium.LayerControl().add_to(m)
+    st_folium(m, width=1100, height=600)
