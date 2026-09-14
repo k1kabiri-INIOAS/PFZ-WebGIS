@@ -1,7 +1,10 @@
 # File Name: app.py
 import os
+import sys
 import tempfile
 import zipfile
+import traceback
+import logging
 import streamlit as st
 import geopandas as gpd
 import xarray as xr
@@ -16,21 +19,52 @@ import warnings
 from modules.fetcher import fetch_near_realtime_data
 from modules.processor import process_pfz_pipeline
 
-# جلوگیری از چاپ هشدارهای متپلوت‌لیب در لاگ سرور
 warnings.filterwarnings("ignore")
 plt.switch_backend('Agg')
 
 st.set_page_config(page_title="PFZ Management System", layout="wide")
 
+# تنظیمات لاگ‌گیری سیستم برای چاپ مستقیم در کنسول سرور
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+# مقداردهی متغیرهای پایدار برای حفظ لاگ‌ها و وضعیت برنامه
+if "error_logs" not in st.session_state:
+    st.session_state.error_logs = []
+if "analysis_done" not in st.session_state:
+    st.session_state.analysis_done = False
+for key in ["nc_out", "tif_out", "fronts_geojson", "gdf", "minx", "miny", "maxx", "maxy"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
+
+def record_error(msg, exc=None):
+    """ثبت خطا هم در سرور و هم در حافظه ماندگار وبسایت"""
+    full_msg = msg
+    if exc:
+        full_msg += f"\n{traceback.format_exc()}"
+    print(f"[PFZ-LOG-ERROR] {full_msg}", flush=True)
+    logging.error(full_msg)
+    st.session_state.error_logs.append(full_msg)
+
 st.title("🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ)")
-st.markdown("سامانه یکپارچه اقیانوس‌شناسی WebGIS با قابلیت استخراج دینامیک خطوط جبهه.")
+
+# نمایش کادر ماندگار خطاها و لاگ‌ها در بالای صفحه (در صورت وجود خطا)
+if st.session_state.error_logs:
+    st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است. می‌توانید متن زیر را کپی کرده و ارسال کنید:")
+    all_logs_str = "\n" + ("="*50) + "\n".join(st.session_state.error_logs)
+    st.code(all_logs_str, language="text")
+    if st.button("🗑️ پاک‌کردن تاریخچه خطاها"):
+        st.session_state.error_logs = []
+        st.rerun()
 
 st.sidebar.header("تنظیمات پردازش و مدل")
 
 uploaded_shapefile_zip = st.sidebar.file_uploader(
     "آپلود فایل فشرده شیپ‌فایل منطقه (.zip)", 
-    type="zip",
-    help="لطفاً فایل‌های شیپ‌فایل خود (.shp, .shx, .dbf, .prj) را در یک فایل فشرده (ZIP) قرار داده و آپلود کنید."
+    type="zip"
 )
 
 output_dir = "Data_Processed"
@@ -40,16 +74,17 @@ sst_weight = st.sidebar.slider("وزن جبهه‌های حرارتی SST", 0.0,
 chl_weight = st.sidebar.slider("وزن کلروفیل-آ (Chlorophyll-a)", 0.0, 1.0, 0.5, 0.1)
 
 st.sidebar.subheader("تنظیمات استخراج عوارض")
-pfz_threshold = st.sidebar.slider(
-    "آستانه حساسیت جبهه‌ها (Threshold)", 
-    0.1, 1.0, 0.45, 0.05, 
-    help="اگر هیچ خطی روی نقشه ظاهر نمی‌شود، این مقدار را کاهش دهید تا جبهه‌های ضعیف‌تر نیز شناسایی شوند."
-)
+pfz_threshold = st.sidebar.slider("آستانه حساسیت جبهه‌ها (Threshold)", 0.1, 1.0, 0.45, 0.05)
 
 def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
     try:
+        if not nc_path or not os.path.exists(nc_path):
+            record_error(f"فایل NetCDF وجود ندارد: {nc_path}")
+            return False
+
         ds = xr.open_dataset(nc_path)
         if "pfz_index" not in ds:
+            record_error("متغیر 'pfz_index' در فایل NetCDF یافت نشد.")
             return False
         
         da = ds["pfz_index"]
@@ -65,27 +100,22 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
             
         valid_mask = ~np.isnan(data)
         if not valid_mask.any():
-            st.warning("⚠️ داده‌های محاسباتی تماماً خالی (NaN) هستند.")
+            record_error("ماتریس محاسباتی pfz_index کلاً از داده‌های NaN تشکیل شده است.")
             return False
             
         raw_max = float(np.nanmax(data))
-        
-        # نرم‌سازی ماتریس
         data_filled = np.nan_to_num(data, nan=0.0)
         data_smoothed = ndimage.gaussian_filter(data_filled, sigma=1.0)
         data_smoothed[~valid_mask] = np.nan
         
-        # محاسبه ماکزیمم جدید پس از فیلتر گوسی
         valid_smoothed = data_smoothed[valid_mask]
         smooth_max = float(np.nanmax(valid_smoothed))
         
-        st.info(f"📊 **حداکثر شاخص خام:** {raw_max:.3f} | **حداکثر پس از نرم‌سازی:** {smooth_max:.3f}")
+        print(f"[PFZ-INFO] Raw Max: {raw_max:.3f} | Smooth Max: {smooth_max:.3f}", flush=True)
         
-        # آداپته کردن آستانه کاربر با واقعیتِ ماتریس نرم‌شده
         active_threshold = user_threshold
         if active_threshold >= smooth_max:
-            active_threshold = smooth_max * 0.85  # تنظیم روی ۸۵ درصد ماکزیمم جدید
-            st.warning(f"⚠️ به دلیل اعمال فیلتر نرم‌ساز، آستانه شما به طور خودکار به {active_threshold:.3f} تعدیل شد.")
+            active_threshold = smooth_max * 0.85
 
         lon_grid, lat_grid = np.meshgrid(lons, lats)
         
@@ -101,102 +131,99 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
             plt.close(fig)
             return extracted
 
-        # تلاش اول برای رسم خط
         lines = extract_lines(active_threshold)
         
-        # سیستم پشتیبان بر اساس درصدهای ماکزیمم نرم‌شده
         if not lines:
             fallback_percents = [0.70, 0.50, 0.30, 0.10]
-            st.warning("⚠️ در آستانه اولیه خط ممتدی یافت نشد. در حال اسکن اعماق ماتریس...")
             for pct in fallback_percents:
                 test_t = smooth_max * pct
                 if test_t <= 0: continue
                 lines = extract_lines(test_t)
                 if lines:
-                    st.success(f"✅ جبهه‌ها با موفقیت در آستانه جایگزین ({test_t:.3f}) پیدا شدند!")
                     active_threshold = test_t
                     break
         
         if lines:
             gdf_fronts = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
             gdf_fronts['Threshold'] = active_threshold
-            # افزودن طول برای فیلتر کردن خطوط بسیار کوتاه (نویزها)
-            gdf_fronts = gdf_fronts.to_crs("EPSG:3857") # تبدیل به سیستم متریک موقت
+            gdf_fronts = gdf_fronts.to_crs("EPSG:3857")
             gdf_fronts['Length_km'] = gdf_fronts.geometry.length / 1000
-            gdf_fronts = gdf_fronts.to_crs("EPSG:4326") # بازگشت به WGS84
+            gdf_fronts = gdf_fronts.to_crs("EPSG:4326")
             
-            # حذف خطوطی که از 1 کیلومتر کوتاه‌تر هستند (نویزهای نقطه‌ای)
-            gdf_fronts = gdf_fronts[gdf_fronts['Length_km'] > 1.0]
+            gdf_fronts = gdf_fronts[gdf_fronts['Length_km'] > 0.5]
             
             if not gdf_fronts.empty:
                 os.makedirs(os.path.dirname(output_geojson_path), exist_ok=True)
                 gdf_fronts.to_file(output_geojson_path, driver="GeoJSON")
                 return True
             else:
-                st.warning("⚠️ جبهه‌ها شناسایی شدند اما طول آن‌ها برای تشکیل یک زون صیادی پیوسته بسیار کوتاه بود.")
+                record_error("خطوط جبهه یافت شدند اما همگی کوتاه‌تر از 0.5 کیلومتر بوده و فیلتر شدند.")
                 return False
         else:
-            st.error("⚠️ ماتریس داده کاملاً یکنواخت است و هیچ گرادیان (تغییرات) معناداری برای رسم خط در آن وجود ندارد.")
+            record_error(f"هیچ خط کانتوری در آستانه‌های مختلف پیدا نشد. Smooth Max: {smooth_max}")
             return False
             
     except Exception as ex:
-        st.error(f"خطا در پردازش ماتریس: {ex}")
+        record_error("خطای غیرمنتظره در generate_fronts_fallback", ex)
     return False
-
-# Session State Initialization
-for key in ["analysis_done", "nc_out", "tif_out", "fronts_geojson", "gdf", "minx", "miny", "maxx", "maxy"]:
-    if key not in st.session_state:
-        st.session_state[key] = None if key != "analysis_done" else False
 
 if st.sidebar.button("دریافت داده‌های به‌روز و اجرای تحلیل"):
     if uploaded_shapefile_zip is None:
-        st.error("لطفاً فایل فشرده شیپ‌فایل منطقه (.zip) را در سایدبار آپلود کنید.")
+        st.error("لطفاً فایل فشرده شیپ‌فایل منطقه (.zip) را آپلود کنید.")
     else:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with zipfile.ZipFile(uploaded_shapefile_zip, 'r') as zip_ref:
-                zip_ref.extractall(tmpdir)
-            
-            shp_files = [os.path.join(r, f) for r, d, files in os.walk(tmpdir) for f in files if f.endswith('.shp')]
-            
-            if not shp_files:
-                st.error("فایل با پسوند .shp در داخل فایل فشرده یافت نشد.")
-            else:
-                shapefile_path = shp_files[0]
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with zipfile.ZipFile(uploaded_shapefile_zip, 'r') as zip_ref:
+                    zip_ref.extractall(tmpdir)
                 
-                with st.spinner("در حال اتصال به سرور و دریافت داده‌ها..."):
-                    gdf = gpd.read_file(shapefile_path)
-                    if gdf.crs is not None and gdf.crs != "EPSG:4326":
-                        gdf = gdf.to_crs("EPSG:4326")
-                    minx, miny, maxx, maxy = gdf.total_bounds
+                shp_files = [os.path.join(r, f) for r, d, files in os.walk(tmpdir) for f in files if f.endswith('.shp')]
+                
+                if not shp_files:
+                    record_error("فایل .shp در داخل فایل ZIP پیدا نشد.")
+                else:
+                    shapefile_path = shp_files[0]
                     
-                    os.makedirs(output_dir, exist_ok=True)
-                    sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
-                    
-                    if sst_nc_path and chl_nc_path:
-                        st.success(f"✅ داده‌های تاریخ {latest_date} با موفقیت دریافت شدند.")
+                    with st.spinner("در حال دریافت داده‌های ماهواره‌ای..."):
+                        gdf = gpd.read_file(shapefile_path)
+                        if gdf.crs is not None and gdf.crs != "EPSG:4326":
+                            gdf = gdf.to_crs("EPSG:4326")
+                        minx, miny, maxx, maxy = gdf.total_bounds
                         
-                        with st.spinner("در حال محاسبه مدل و استخراج خطوط جبهه..."):
-                            nc_out, tif_out, fronts_geojson = process_pfz_pipeline(
-                                shapefile_path, sst_nc_path, chl_nc_path, output_dir, sst_weight, chl_weight
-                            )
-                            
-                            target_geojson = os.path.join(output_dir, "pfz_fronts.geojson")
-                            fallback_success = generate_fronts_fallback(nc_out, target_geojson, user_threshold=pfz_threshold)
-                            
-                            if fallback_success:
-                                fronts_geojson = target_geojson
-                            else:
-                                fronts_geojson = None
-                            
-                            st.session_state.analysis_done = True
-                            st.session_state.nc_out = nc_out
-                            st.session_state.fronts_geojson = fronts_geojson
-                            st.session_state.gdf = gdf
-                            st.session_state.minx, st.session_state.miny, st.session_state.maxx, st.session_state.maxy = minx, miny, maxx, maxy
-                    else:
-                        st.error("خطا در دریافت داده‌های ماهواره‌ای.")
+                        os.makedirs(output_dir, exist_ok=True)
+                        
+                        try:
+                            sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
+                        except Exception as fetch_ex:
+                            record_error("خطا در ماژول fetch_near_realtime_data", fetch_ex)
+                            sst_nc_path, chl_nc_path = None, None
+                        
+                        if sst_nc_path and chl_nc_path:
+                            with st.spinner("در حال پردازش مدل و استخراج جبهه‌ها..."):
+                                try:
+                                    nc_out, tif_out, fronts_geojson = process_pfz_pipeline(
+                                        shapefile_path, sst_nc_path, chl_nc_path, output_dir, sst_weight, chl_weight
+                                    )
+                                except Exception as proc_ex:
+                                    record_error("خطا در ماژول process_pfz_pipeline", proc_ex)
+                                    nc_out, fronts_geojson = None, None
 
-# Render Results
+                                target_geojson = os.path.join(output_dir, "pfz_fronts.geojson")
+                                fallback_success = generate_fronts_fallback(nc_out, target_geojson, user_threshold=pfz_threshold)
+                                
+                                if fallback_success:
+                                    fronts_geojson = target_geojson
+                                
+                                st.session_state.analysis_done = True
+                                st.session_state.nc_out = nc_out
+                                st.session_state.fronts_geojson = fronts_geojson
+                                st.session_state.gdf = gdf
+                                st.session_state.minx, st.session_state.miny, st.session_state.maxx, st.session_state.maxy = minx, miny, maxx, maxy
+                        else:
+                            record_error("فایل‌های SST یا CHL دریافت نشدند.")
+        except Exception as global_ex:
+            record_error("خطای کلی در جریان اجرای برنامه", global_ex)
+
+# رندر نقشه و خروجی‌ها
 if st.session_state.analysis_done and st.session_state.gdf is not None:
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه پس‌زمینه")
     
@@ -231,10 +258,9 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
                     opacity=0.6,
                     name="PFZ Index Heatmap"
                 ).add_to(m)
-        except Exception:
-            pass
+        except Exception as img_ex:
+            record_error("خطا در رندر تصویر Heatmap روی نقشه", img_ex)
 
-    fronts_gdf = None
     if st.session_state.fronts_geojson and os.path.exists(st.session_state.fronts_geojson):
         try:
             fronts_gdf = gpd.read_file(st.session_state.fronts_geojson)
@@ -244,18 +270,9 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
                     name="PFZ Front Lines",
                     style_function=lambda x: {'color': '#FF0000', 'weight': 4.0, 'opacity': 1.0}
                 ).add_to(m)
-                st.success(f"🎯 تعداد {len(fronts_gdf)} جبهه صیادی با موفقیت استخراج و رسم شد.")
-        except Exception:
-            pass
+        except Exception as geojson_ex:
+            record_error("خطا در خواندن فایل GeoJSON جبهه‌ها", geojson_ex)
 
     m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
     folium.LayerControl().add_to(m)
     st_folium(m, width=1100, height=600)
-    
-    if fronts_gdf is not None and not fronts_gdf.empty:
-        st.subheader("📋 جدول اطلاعات عوارض خطوط جبهه استخراج‌شده")
-        display_gdf = fronts_gdf.drop(columns='geometry', errors='ignore')
-        st.dataframe(display_gdf, use_container_width=True)
-        
-        with open(st.session_state.fronts_geojson, "rb") as file:
-            st.download_button("📥 دانلود خطوط جبهه نهایی (GeoJSON)", data=file, file_name="pfz_front_lines.geojson", mime="application/geo+json")
