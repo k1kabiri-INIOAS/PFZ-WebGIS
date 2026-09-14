@@ -24,14 +24,12 @@ plt.switch_backend('Agg')
 
 st.set_page_config(page_title="PFZ Management System", layout="wide")
 
-# تنظیمات لاگ‌گیری سیستم برای چاپ مستقیم در کنسول سرور
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s: %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-# مقداردهی متغیرهای پایدار برای حفظ لاگ‌ها و وضعیت برنامه
 if "error_logs" not in st.session_state:
     st.session_state.error_logs = []
 if "analysis_done" not in st.session_state:
@@ -41,7 +39,6 @@ for key in ["nc_out", "tif_out", "fronts_geojson", "gdf", "minx", "miny", "maxx"
         st.session_state[key] = None
 
 def record_error(msg, exc=None):
-    """ثبت خطا هم در سرور و هم در حافظه ماندگار وبسایت"""
     full_msg = msg
     if exc:
         full_msg += f"\n{traceback.format_exc()}"
@@ -51,10 +48,9 @@ def record_error(msg, exc=None):
 
 st.title("🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ)")
 
-# نمایش کادر ماندگار خطاها و لاگ‌ها در بالای صفحه (در صورت وجود خطا)
 if st.session_state.error_logs:
-    st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است. می‌توانید متن زیر را کپی کرده و ارسال کنید:")
-    all_logs_str = "\n" + ("="*50) + "\n".join(st.session_state.error_logs)
+    st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است:")
+    all_logs_str = "\n".join(st.session_state.error_logs)
     st.code(all_logs_str, language="text")
     if st.button("🗑️ پاک‌کردن تاریخچه خطاها"):
         st.session_state.error_logs = []
@@ -123,11 +119,19 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
             fig, ax = plt.subplots()
             cs = ax.contour(lon_grid, lat_grid, data_smoothed, levels=[t_val])
             extracted = []
-            for collection in cs.collections:
-                for path in collection.get_paths():
+            
+            # سازگار با تمام نسخه‌های Matplotlib قدیم و جدید
+            if hasattr(cs, 'allsegs'):
+                for level_segs in cs.allsegs:
+                    for seg in level_segs:
+                        if len(seg) > 1:
+                            extracted.append(LineString(seg))
+            elif hasattr(cs, 'get_paths'):
+                for path in cs.get_paths():
                     verts = path.vertices
                     if len(verts) > 1:
                         extracted.append(LineString(verts))
+            
             plt.close(fig)
             return extracted
 
@@ -223,7 +227,6 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
         except Exception as global_ex:
             record_error("خطای کلی در جریان اجرای برنامه", global_ex)
 
-# رندر نقشه و خروجی‌ها
 if st.session_state.analysis_done and st.session_state.gdf is not None:
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه پس‌زمینه")
     
@@ -270,6 +273,7 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
                     name="PFZ Front Lines",
                     style_function=lambda x: {'color': '#FF0000', 'weight': 4.0, 'opacity': 1.0}
                 ).add_to(m)
+                st.success(f"🎯 تعداد {len(fronts_gdf)} جبهه صیادی با موفقیت استخراج و رسم شد.")
         except Exception as geojson_ex:
             record_error("خطا در خواندن فایل GeoJSON جبهه‌ها", geojson_ex)
 
