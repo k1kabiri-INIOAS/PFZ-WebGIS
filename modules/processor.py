@@ -1,5 +1,5 @@
 # File Path: modules/processor.py
-# Description: Dynamic weighting pipeline combining normalized SST gradient and Chlorophyll-a layers into a continuous PFZ index.
+# Description: Ocean-only PFZ processing with land masking, ROI clipping, and file handle cleanup.
 
 import os
 import numpy as np
@@ -10,13 +10,7 @@ from shapely.geometry import LineString
 import rioxarray
 
 def process_pfz_pipeline(*args, **kwargs):
-    """
-    پردازش داده‌های SST و Chlorophyll برای استخراج مناطق مستعد صید (PFZ)
-    با اعمال وزن‌های متغیر SST و Chlorophyll
-    """
     all_args = list(args)
-    
-    # استخراج انعطاف‌پذیر پارامترهای ورودی
     shapefile_path = all_args[0] if len(all_args) > 0 else kwargs.get('shapefile_path')
     sst_nc_path = all_args[1] if len(all_args) > 1 else kwargs.get('sst_nc_path')
     chl_nc_path = all_args[2] if len(all_args) > 2 else kwargs.get('chl_nc_path')
@@ -25,19 +19,16 @@ def process_pfz_pipeline(*args, **kwargs):
     chl_weight = float(all_args[5]) if len(all_args) > 5 else float(kwargs.get('chl_weight', 0.5))
 
     os.makedirs(out_dir, exist_ok=True)
-
     nc_out = os.path.join(out_dir, "pfz_output.nc")
     tif_out = os.path.join(out_dir, "pfz_output.tif")
     fronts_geojson = os.path.join(out_dir, "pfz_fronts.geojson")
 
     try:
-        if not sst_nc_path or not os.path.exists(sst_nc_path) or not chl_nc_path or not os.path.exists(chl_nc_path):
-            raise FileNotFoundError("فایل‌های ورودی SST یا Chlorophyll یافت نشدند.")
+        # استفاده از Context Manager برای آزاد کردن قفل فایل‌ها
+        with xr.open_dataset(sst_nc_path) as ds_sst_raw, xr.open_dataset(chl_nc_path) as ds_chl_raw:
+            ds_sst = ds_sst_raw.load()
+            ds_chl = ds_chl_raw.load()
 
-        ds_sst = xr.open_dataset(sst_nc_path)
-        ds_chl = xr.open_dataset(chl_nc_path)
-
-        # استانداردسازی ابعاد مکانی
         def standardize_ds(ds):
             rename_dict = {}
             for dim in ['longitude', 'x']:
@@ -51,75 +42,83 @@ def process_pfz_pipeline(*args, **kwargs):
         ds_sst = standardize_ds(ds_sst)
         ds_chl = standardize_ds(ds_chl)
 
-        sst_vars = [v for v in ds_sst.data_vars if 'sst' in v.lower() or 'temp' in v.lower()]
-        sst_var = sst_vars[0] if sst_vars else list(ds_sst.data_vars.keys())[0]
+        sst_var = next((v for v in ds_sst.data_vars if 'sst' in v.lower() or 'temp' in v.lower()), list(ds_sst.data_vars.keys())[0])
+        chl_var = next((v for v in ds_chl.data_vars if 'chl' in v.lower()), list(ds_chl.data_vars.keys())[0])
 
-        chl_vars = [v for v in ds_chl.data_vars if 'chl' in v.lower()]
-        chl_var = chl_vars[0] if chl_vars else list(ds_chl.data_vars.keys())[0]
-
-        # بازنمونه‌گیری شبکه کلروفیل منطبق با SST
         ds_chl = ds_chl.interp_like(ds_sst, method='nearest')
 
-        sst_data = ds_sst[sst_var].squeeze().values
-        chl_data = ds_chl[chl_var].squeeze().values
+        sst_da = ds_sst[sst_var].squeeze()
+        chl_da = ds_chl[chl_var].squeeze()
 
-        # کاهش ابعاد به ۲ بعدی در صورت وجود لایه‌های زمانی/عمقی
-        while sst_data.ndim > 2:
-            sst_data = sst_data[0]
-        while chl_data.ndim > 2:
-            chl_data = chl_data[0]
+        while sst_da.ndim > 2: sst_da = sst_da[0]
+        while chl_da.ndim > 2: chl_da = chl_da[0]
 
-        # مدیریت مقادیر NaN
-        sst_data = np.nan_to_num(sst_data, nan=np.nanmean(sst_data) if not np.isnan(sst_data).all() else 25.0)
-        chl_data = np.nan_to_num(chl_data, nan=np.nanmean(chl_data) if not np.isnan(chl_data).all() else 0.5)
+        # برش مکانی بر اساس شیپ‌فایل منطقه (در صورت وجود)
+        if shapefile_path and os.path.exists(shapefile_path):
+            try:
+                gdf_roi = gpd.read_file(shapefile_path)
+                if gdf_roi.crs is not None and gdf_roi.crs != "EPSG:4326":
+                    gdf_roi = gdf_roi.to_crs("EPSG:4326")
+                sst_da = sst_da.rio.write_crs("EPSG:4326").rio.clip(gdf_roi.geometry, gdf_roi.crs, drop=False)
+                chl_da = chl_da.rio.write_crs("EPSG:4326").rio.clip(gdf_roi.geometry, gdf_roi.crs, drop=False)
+            except Exception as clip_err:
+                print(f"ROI Clipping Warning: {clip_err}")
 
-        lon_arr = ds_sst.lon.values
-        lat_arr = ds_sst.lat.values
+        sst_vals = sst_da.values.copy()
+        chl_vals = chl_da.values.copy()
 
-        # ۱. محاسبه گرادیان حرارتی SST و نرمال‌سازی (۰ تا ۱)
-        dy, dx = np.gradient(sst_data)
+        # ماسک‌سازی پهنه دریا (حذف تمام مقادیر خشکی)
+        ocean_mask = ~np.isnan(sst_vals) & ~np.isnan(chl_vals)
+        if not ocean_mask.any():
+            raise ValueError("هیچ پیکسل دریایی معتبری در محدوده یافت نشد.")
+
+        # محاسبه گرادیان حرارتی فقط در پهنه دریا
+        sst_filled = np.where(ocean_mask, sst_vals, np.nanmean(sst_vals[ocean_mask]))
+        dy, dx = np.gradient(sst_filled)
         sst_grad = np.sqrt(dx**2 + dy**2)
-        grad_min, grad_max = np.nanmin(sst_grad), np.nanmax(sst_grad)
-        norm_sst_grad = (sst_grad - grad_min) / (grad_max - grad_min + 1e-6)
+        sst_grad[~ocean_mask] = 0.0  # صفر کردن گرادیان روی خشکی و خط ساحلی
 
-        # ۲. نرمال‌سازی لگاریتمی کلروفیل (۰ تا ۱)
-        chl_log = np.log1p(np.maximum(chl_data, 0))
-        chl_min, chl_max = np.nanmin(chl_log), np.nanmax(chl_log)
-        norm_chl = (chl_log - chl_min) / (chl_max - chl_min + 1e-6)
+        # نرمال‌سازی گرادیان SST روی دریا
+        grad_ocean = sst_grad[ocean_mask]
+        g_min, g_max = np.nanmin(grad_ocean), np.nanmax(grad_ocean)
+        norm_sst_grad = np.zeros_like(sst_grad)
+        if g_max > g_min:
+            norm_sst_grad[ocean_mask] = (sst_grad[ocean_mask] - g_min) / (g_max - g_min)
 
-        # ۳. محاسبه شاخص ترکیبی وزن‌دار PFZ (بازه ۰.۰ تا ۱.۰)
-        total_weight = sst_weight + chl_weight
-        if total_weight <= 0:
-            total_weight = 1.0
+        # نرمال‌سازی کلروفیل روی دریا
+        chl_ocean = chl_vals[ocean_mask]
+        chl_log = np.log1p(np.maximum(chl_vals, 0))
+        c_min, c_max = np.nanmin(chl_log[ocean_mask]), np.nanmax(chl_log[ocean_mask])
+        norm_chl = np.zeros_like(chl_vals)
+        if c_max > c_min:
+            norm_chl[ocean_mask] = (chl_log[ocean_mask] - c_min) / (c_max - c_min)
 
-        pfz_index_arr = (sst_weight * norm_sst_grad + chl_weight * norm_chl) / total_weight
+        # محاسبه شاخص وزن‌دار PFZ فقط برای دریا
+        tot_w = sst_weight + chl_weight
+        tot_w = 1.0 if tot_w <= 0 else tot_w
 
-        # استخراج اولیه کانتور جبهه‌ها
+        pfz_index_arr = np.full_like(sst_vals, np.nan)
+        pfz_index_arr[ocean_mask] = (sst_weight * norm_sst_grad[ocean_mask] + chl_weight * norm_chl[ocean_mask]) / tot_w
+
+        lon_arr = ds_sst.lon.values if 'lon' in ds_sst.coords else ds_sst.longitude.values
+        lat_arr = ds_sst.lat.values if 'lat' in ds_sst.coords else ds_sst.latitude.values
+
+        # استخراج کانتور فقط از پیکسل‌های دریا
+        contour_data = np.nan_to_num(pfz_index_arr, nan=0.0)
         fig, ax = plt.subplots()
-        cs = ax.contour(lon_arr, lat_arr, pfz_index_arr, levels=[0.45])
+        cs = ax.contour(lon_arr, lat_arr, contour_data, levels=[0.45])
         
         lines = []
-        if hasattr(cs, 'collections'):
-            paths = [path for coll in cs.collections for path in coll.get_paths()]
-        elif hasattr(cs, 'get_paths'):
-            paths = cs.get_paths()
-        else:
-            paths = []
-
-        for path in paths:
-            v = path.vertices
-            if len(v) >= 2:
-                lines.append(LineString(v))
+        for segs in cs.allsegs:
+            for poly in segs:
+                if len(poly) > 1:
+                    lines.append(LineString(poly))
         plt.close(fig)
-
-        if len(lines) == 0 and len(lon_arr) > 1 and len(lat_arr) > 1:
-            dummy_line = LineString([(lon_arr[0], lat_arr[0]), (lon_arr[-1], lat_arr[-1])])
-            lines.append(dummy_line)
 
         gdf = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
         gdf.to_file(fronts_geojson, driver="GeoJSON")
 
-        # ذخیره خروجی NetCDF با ماتریس پیوسته pfz_index
+        # ذخیره NetCDF و GeoTIFF
         ds_out = xr.Dataset(
             {
                 "pfz": (["lat", "lon"], pfz_index_arr),
@@ -129,7 +128,6 @@ def process_pfz_pipeline(*args, **kwargs):
         )
         ds_out.to_netcdf(nc_out)
 
-        # تنظیم ابعاد مکانی و سیستم مختصات برای GeoTIFF
         pfz_da = ds_out["pfz_index"]
         pfz_da = pfz_da.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
         pfz_da = pfz_da.rio.write_crs("EPSG:4326", inplace=False)
@@ -139,33 +137,4 @@ def process_pfz_pipeline(*args, **kwargs):
 
     except Exception as e:
         print(f"Error in PFZ pipeline: {e}")
-        
-        # حالت Fallback در صورت بروز خطا
-        try:
-            dummy_lon = np.linspace(48, 52, 10)
-            dummy_lat = np.linspace(25, 30, 10)
-            
-            lon_2d, lat_2d = np.meshgrid(dummy_lon, dummy_lat)
-            dummy_data = np.sin(lon_2d) * np.cos(lat_2d) 
-            
-            ds_dummy = xr.Dataset(
-                {
-                    "pfz": (["lat", "lon"], dummy_data),
-                    "pfz_index": (["lat", "lon"], dummy_data)
-                },
-                coords={"lon": dummy_lon, "lat": dummy_lat}
-            )
-            ds_dummy.to_netcdf(nc_out)
-
-            dummy_da = ds_dummy["pfz_index"]
-            dummy_da = dummy_da.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
-            dummy_da = dummy_da.rio.write_crs("EPSG:4326", inplace=False)
-            dummy_da.rio.to_raster(tif_out)
-            
-            dummy_line = LineString([(48.0, 25.0), (52.0, 30.0)])
-            gdf_dummy = gpd.GeoDataFrame(geometry=[dummy_line], crs="EPSG:4326")
-            gdf_dummy.to_file(fronts_geojson, driver="GeoJSON")
-        except Exception as inner_e:
-            print(f"Fallback creation failed: {inner_e}")
-
         return nc_out, tif_out, fronts_geojson
