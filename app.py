@@ -129,8 +129,12 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
 
         data_filled = np.nan_to_num(data, nan=0.0)
         data_smoothed = ndimage.gaussian_filter(data_filled, sigma=1.0)
-        data_smoothed[~valid_mask] = np.nan
         
+        # --- اصلاح اعمال شده برای رفع خطای تبدیل اعشاری ---
+        data_smoothed = data_smoothed.astype(float) 
+        data_smoothed[~valid_mask] = np.nan
+        # ---------------------------------------------------
+
         valid_smoothed = data_smoothed[valid_mask]
         smooth_max = float(np.nanmax(valid_smoothed))
         
