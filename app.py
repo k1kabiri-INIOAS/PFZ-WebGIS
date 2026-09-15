@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-aligned Heatmap Georeferencing and dual date labels.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with accurate Heatmap Geo-referencing and dual (Jalali/Gregorian) date displays.
 
 import os
 import sys
@@ -33,7 +33,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-# تابع تبدیل تاریخ میلادی به شمسی
+# تابع تبدیل تاریخ میلادی به شمسی (بدون نیاز به کتابخانه خارجی)
 def gregorian_to_jalali(gy, gm, gd):
     g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
     if gy > 1600:
@@ -268,7 +268,7 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
 
                 if sst_nc_path and chl_nc_path:
                     greg_d, jalali_d = parse_date_formats(latest_date)
-                    log_process("success", f"داده‌های ماهواره‌ای با موفقیت دریافت شدند. (تاریخ اخذ داده: {jalali_d} | Data Acquisition Date: {greg_d})", status)
+                    log_process("success", f"داده‌های ماهواره‌ای با موفقیت دریافت شدند. (تاریخ شمسی: {jalali_d} | Date: {greg_d})", status)
                     
                     all_front_gdfs = []
                     nc_out_list = []
@@ -328,15 +328,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
     
     greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
     
+    # نمایش تاریخ‌های شمسی و میلادی بالای نقشه
     if greg_str and jalali_str:
-        st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str}` | **Data Acquisition Date:** `{greg_str}`")
+        st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str}` | **Date:** `{greg_str}`")
 
     m = folium.Map(
         location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
         zoom_start=6, tiles="OpenStreetMap"
     )
     
-    # ۱. توليد لایه Heatmap با انطباق کامل مکانی (Pixel Boundary Offset Correction)
+    # ۱. تولید و افزودن دقیق لایه Heatmap با جئو‌رفرنس صحیح برای هر منطقه
     if st.session_state.nc_out_list:
         for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
             if nc_out and os.path.exists(nc_out):
@@ -355,25 +356,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                         lats = pfz_da[lat_name_plot].values
                         lons = pfz_da[lon_name_plot].values
                         
-                        # محاسبه ابعاد نصف‌تفکیک مکانی جهت اصلاح انحراف لبه‌های پیکسل
-                        dx = float(np.abs(lons[1] - lons[0])) / 2.0 if len(lons) > 1 else 0.0
-                        dy = float(np.abs(lats[1] - lats[0])) / 2.0 if len(lats) > 1 else 0.0
-
-                        grid_minx = float(np.nanmin(lons)) - dx
-                        grid_maxx = float(np.nanmax(lons)) + dx
-                        grid_miny = float(np.nanmin(lats)) - dy
-                        grid_maxy = float(np.nanmax(lats)) + dy
+                        grid_minx, grid_maxx = float(np.nanmin(lons)), float(np.nanmax(lons))
+                        grid_miny, grid_maxy = float(np.nanmin(lats)), float(np.nanmax(lats))
 
                         data_arr = pfz_da.values.copy()
                         
-                        # مرتب‌سازی جهت آرایه بر اساس محور عرض جغرافیایی
+                        # در صورت معکوس بودن محور lat، تصویر جهت درستی داشته باشد
                         if lats[0] > lats[-1]:
                             data_arr = np.flipud(data_arr)
 
-                        # تنظیم رنگ شفاف برای پیکسل‌های بی‌اعتبار (NaN)
-                        cmap = plt.cm.jet.copy()
-                        cmap.set_bad(alpha=0.0)
-
+                        # ساخت شکل دقیق بدون Margin برای جئورفرنس دقیق
                         fig = plt.figure(figsize=(10, 10), dpi=200)
                         ax = fig.add_axes([0, 0, 1, 1])
                         ax.set_axis_off()
@@ -381,7 +373,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                         
                         ax.imshow(
                             data_arr, 
-                            cmap=cmap, 
+                            cmap="jet", 
                             extent=[grid_minx, grid_maxx, grid_miny, grid_maxy], 
                             origin='lower', 
                             aspect='auto',
@@ -421,16 +413,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         ).add_to(m)
         st.success(f"🎯 تعداد {len(st.session_state.combined_fronts_gdf)} جبهه صیادی در مجموع مناطق استخراج و رسم شد.")
 
-    # ۴. کادر شناور روی نقشه با عنوان کامل Data Acquisition Date
+    # ۴. کادر شناور روی نقشه با نمایش همزمان تاریخ شمسی و میلادی
     if greg_str and jalali_str:
         date_box_html = f'''
             <div style="position: fixed; 
-                        bottom: 25px; left: 20px; width: 250px; height: 50px; 
+                        bottom: 25px; left: 20px; width: 220px; height: 50px; 
                         z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
                         border: 2px solid #2B5B84; border-radius: 6px; 
                         padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;">
                 تاریخ اخذ داده: {jalali_str}<br>
-                <span style="font-family: Arial, sans-serif; color: #333333; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
+                <span style="font-family: Arial, sans-serif; color: #333333;">Date: {greg_str}</span>
             </div>
         '''
         m.get_root().html.add_child(folium.Element(date_box_html))
