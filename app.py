@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-aligned Heatmap layers (PFZ, SST, Chl) and dual dates.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect heatmaps for PFZ, SST, and Chlorophyll-a.
 
 import os
 import sys
@@ -157,11 +157,9 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
             return None
 
         with xr.open_dataset(nc_path) as ds:
-            if "pfz_index" not in ds:
-                record_error("متغیر 'pfz_index' در فایل NetCDF یافت نشد.")
-                return None
+            var_key = "pfz_index" if "pfz_index" in ds else list(ds.data_vars.keys())[0]
+            da = ds[var_key]
             
-            da = ds["pfz_index"]
             lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
             lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
             
@@ -169,8 +167,9 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
                 record_error("ابعاد مکانی (lat/lon) به درستی در فایل NetCDF یافت نشد.")
                 return None
                 
-            lats = ds[lat_name].values
-            lons = ds[lon_name].values
+            da = da.sortby(lat_name, ascending=True).sortby(lon_name, ascending=True)
+            lats = da[lat_name].values
+            lons = da[lon_name].values
             
             if da.ndim > 2:
                 non_spatial_dims = [d for d in da.dims if d not in [lat_name, lon_name]]
@@ -336,91 +335,85 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         zoom_start=6, tiles="OpenStreetMap"
     )
     
-    # ۱. تولید و افزودن لایه‌های Heatmap (PFZ Index، SST، Chlorophyll) با انطباق هندسی دقیق
+    # ۱. تولید لایه‌های سه‌گانه مجزا (PFZ، SST، Chlorophyll-a) بدون هم‌پوشانی یا نام‌گذاری تکراری
     if st.session_state.nc_out_list:
-        var_labels = {
-            "pfz_index": ("شاخص تلفیقی PFZ", "jet"),
-            "sst": ("دمای سطح آب (SST)", "coolwarm"),
-            "chl": ("کلروفیل-آ (Chl-a)", "YlGn"),
-            "chlor_a": ("کلروفیل-آ (Chl-a)", "YlGn")
-        }
-
         for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
             if nc_out and os.path.exists(nc_out):
                 try:
                     with xr.open_dataset(nc_out) as ds_res:
+                        added_types = set()
+                        
                         for var_name in ds_res.data_vars:
-                            if var_name not in var_labels and "pfz" not in var_name and "sst" not in var_name and "chl" not in var_name:
+                            v_lower = var_name.lower()
+                            
+                            if "pfz" in v_lower and "pfz" not in added_types:
+                                label, cmap_name, is_show = "PFZ", "jet", True
+                                added_types.add("pfz")
+                            elif "sst" in v_lower and "sst" not in added_types:
+                                label, cmap_name, is_show = "SST", "coolwarm", False
+                                added_types.add("sst")
+                            elif ("chl" in v_lower or "chlor" in v_lower) and "chl" not in added_types:
+                                label, cmap_name, is_show = "Chlorophyll-a", "YlGn", False
+                                added_types.add("chl")
+                            else:
                                 continue
+
+                            da_var = ds_res[var_name].load()
                             
-                            disp_title, cmap_name = var_labels.get(var_name, (var_name.upper(), "jet"))
-                            pfz_da = ds_res[var_name].load()
-                            
-                            lat_name = next((d for d in pfz_da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
-                            lon_name = next((d for d in pfz_da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+                            lat_name = next((d for d in da_var.dims if d.lower() in ['lat', 'latitude', 'y']), None)
+                            lon_name = next((d for d in da_var.dims if d.lower() in ['lon', 'longitude', 'x']), None)
                             
                             if not lat_name or not lon_name:
                                 continue
 
-                            # حذف ابعاد اضافی (مانند time یا depth)
-                            if da_dim := [d for d in pfz_da.dims if d not in [lat_name, lon_name]]:
-                                for d in da_dim:
-                                    pfz_da = pfz_da.isel({d: 0})
+                            if extra_dims := [d for d in da_var.dims if d not in [lat_name, lon_name]]:
+                                for d in extra_dims:
+                                    da_var = da_var.isel({d: 0})
                             
-                            # تنظیم ترتیب ابعاد به صورت استاندارد (lat, lon)
-                            pfz_da = pfz_da.transpose(lat_name, lon_name)
+                            # مرتب‌سازی صعودی دقیق مختصات جغرافیایی جهت برطرف شدن انحراف vertical
+                            da_var = da_var.sortby(lat_name, ascending=True).sortby(lon_name, ascending=True)
 
-                            # مرتب‌سازی صعودی مختصات جهت جلوگیری از معکوس‌شدن و جابه‌جایی
-                            if pfz_da[lat_name].values[0] > pfz_da[lat_name].values[-1]:
-                                pfz_da = pfz_da.reindex({lat_name: pfz_da[lat_name].values[::-1]})
-                            if pfz_da[lon_name].values[0] > pfz_da[lon_name].values[-1]:
-                                pfz_da = pfz_da.reindex({lon_name: pfz_da[lon_name].values[::-1]})
+                            lats = da_var[lat_name].values
+                            lons = da_var[lon_name].values
 
-                            lats = pfz_da[lat_name].values
-                            lons = pfz_da[lon_name].values
-
-                            # محاسبه دقیق مرز پیکسل‌ها (Pixel Boundaries)
-                            dx = float(np.abs(lons[1] - lons[0])) / 2.0 if len(lons) > 1 else 0.0
-                            dy = float(np.abs(lats[1] - lats[0])) / 2.0 if len(lats) > 1 else 0.0
+                            # محاسبه دقیق لبه سلول‌های پیکسل (Cell Edge Bounding Box)
+                            dx = float(np.abs(lons[1] - lons[0])) / 2.0 if len(lons) > 1 else 0.025
+                            dy = float(np.abs(lats[1] - lats[0])) / 2.0 if len(lats) > 1 else 0.025
 
                             grid_minx = float(lons[0]) - dx
                             grid_maxx = float(lons[-1]) + dx
                             grid_miny = float(lats[0]) - dy
                             grid_maxy = float(lats[-1]) + dy
 
-                            data_arr = pfz_da.values.copy()
+                            data_arr = da_var.values.copy()
+                            ny, nx = data_arr.shape
 
                             cmap = plt.get_cmap(cmap_name).copy()
                             cmap.set_bad(alpha=0.0)
 
-                            fig = plt.figure(figsize=(10, 10), dpi=200)
+                            # رندر تصویر 1:1 دقیقاً هم‌اندازه آرایه داده (حذف پدینگ و مارجین سفارشی matplotlib)
+                            fig = plt.figure(figsize=(nx / 100.0, ny / 100.0), dpi=100)
                             ax = fig.add_axes([0, 0, 1, 1])
                             ax.set_axis_off()
-                            fig.patch.set_alpha(0)
+                            fig.patch.set_alpha(0.0)
                             
                             ax.imshow(
                                 data_arr, 
                                 cmap=cmap, 
-                                extent=[grid_minx, grid_maxx, grid_miny, grid_maxy], 
                                 origin='lower', 
-                                aspect='auto',
-                                interpolation='nearest'
+                                interpolation='none'
                             )
-                            ax.set_xlim(grid_minx, grid_maxx)
-                            ax.set_ylim(grid_miny, grid_maxy)
                             
-                            overlay_path = os.path.join(output_dir, f"{var_name}_overlay_{reg_name.replace(' ', '_')}.png")
-                            fig.savefig(overlay_path, dpi=200, transparent=True)
+                            overlay_path = os.path.join(output_dir, f"{label}_{reg_name.replace(' ', '_')}.png")
+                            fig.savefig(overlay_path, dpi=100, transparent=True)
                             plt.close(fig)
                             
-                            # نمایش پیش‌فرض فقط برای شاخص PFZ فعال است؛ باقی لایه‌ها در کنترل لایه قابل روشن‌کردن هستند
-                            is_pfz = "pfz" in var_name
                             folium.raster_layers.ImageOverlay(
                                 image=overlay_path,
                                 bounds=[[grid_miny, grid_minx], [grid_maxy, grid_maxx]],
-                                opacity=0.6,
-                                name=f"{disp_title} ({reg_name})",
-                                show=is_pfz
+                                opacity=0.65,
+                                name=f"{label} ({reg_name})",
+                                show=is_show
                             ).add_to(m)
                 except Exception as img_ex:
                     record_error(f"خطا در رندر تصویر Heatmap برای {reg_name}", img_ex)
