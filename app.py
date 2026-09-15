@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect heatmaps for PFZ, SST, and Chlorophyll-a.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps (PFZ, SST, Chlorophyll-a), RTL layout, and Persian typography.
 
 import os
 import sys
@@ -14,6 +14,8 @@ import geopandas as gpd
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+from PIL import Image
 import folium
 from shapely.geometry import LineString
 from streamlit_folium import st_folium
@@ -25,7 +27,51 @@ from modules.processor import process_pfz_pipeline
 warnings.filterwarnings("ignore")
 plt.switch_backend('Agg')
 
-st.set_page_config(page_title="PFZ Management System", layout="wide")
+st.set_page_config(page_title="سامانه مدیریت PFZ", layout="wide")
+
+# تزریق استایل RTL و فونت‌های فارسی به Streamlit
+st.markdown("""
+    <style>
+    @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
+    
+    html, body, [class*="css"], div, p, span, h1, h2, h3, h4, h5, h6, label, input, button {
+        font-family: 'Vazirmatn', 'B Titr', 'B Mitra', 'B Zar', 'Tahoma', sans-serif !important;
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    
+    .stApp {
+        direction: rtl !important;
+    }
+    
+    /* راست‌چین کردن منوی کناری (Sidebar) */
+    [data-testid="stSidebar"] {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    
+    [data-testid="stSidebar"] * {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+
+    /* عنوان اصلی سامانه با فونت تیتر */
+    .main-title {
+        font-family: 'B Titr', 'Vazirmatn', sans-serif !important;
+        font-size: 2.2rem !important;
+        color: #1E3A8A;
+        font-weight: bold;
+        margin-bottom: 1rem;
+        text-align: right !important;
+    }
+
+    /* اصلاح نمایش باکس‌های هشدار و گزارش */
+    .stAlert, .stMarkdown {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,7 +79,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-# تابع تبدیل تاریخ میلادی به شمسی
 def gregorian_to_jalali(gy, gm, gd):
     g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
     if gy > 1600:
@@ -71,14 +116,13 @@ def parse_date_formats(date_str):
     except Exception:
         return str(date_str), None
 
-# مقداردهی متغیرهای Session State برای ماندگاری اطلاعات
 if "error_logs" not in st.session_state:
     st.session_state.error_logs = []
 if "process_logs" not in st.session_state:
     st.session_state.process_logs = []
 if "analysis_done" not in st.session_state:
     st.session_state.analysis_done = False
-for key in ["nc_out_list", "combined_fronts_gdf", "combined_region_gdf", "minx", "miny", "maxx", "maxy", "latest_date"]:
+for key in ["nc_out_list", "sst_nc_path", "chl_nc_path", "combined_fronts_gdf", "combined_region_gdf", "minx", "miny", "maxx", "maxy", "latest_date"]:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -95,7 +139,7 @@ def log_process(msg_type, msg_text, status_obj=None):
     if status_obj:
         status_obj.write(msg_text)
 
-st.title("🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ)")
+st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ)</div>', unsafe_allow_html=True)
 
 if st.session_state.error_logs:
     st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است:")
@@ -105,7 +149,7 @@ if st.session_state.error_logs:
         st.session_state.error_logs = []
         st.rerun()
 
-st.sidebar.header("تنظیمات پردازش و مدل")
+st.sidebar.header("⚙️ تنظیمات پردازش و مدل")
 
 uploaded_shapefile_zip = st.sidebar.file_uploader(
     "آپلود فایل فشرده شیپ‌فایل مناطق (.zip)", 
@@ -130,11 +174,11 @@ if uploaded_shapefile_zip is not None:
                 shp_files.append(os.path.join(r, f))
     
     if shp_files:
-        st.sidebar.subheader("⚙️ تنظیمات اختصاصی هر منطقه")
+        st.sidebar.subheader("📌 تنظیمات اختصاصی هر منطقه")
         for shp_path in sorted(shp_files):
             reg_name = os.path.splitext(os.path.basename(shp_path))[0].replace("_", " ").title()
             
-            with st.sidebar.expander(f"📌 {reg_name}", expanded=True):
+            with st.sidebar.expander(f"منطقه: {reg_name}", expanded=True):
                 sst_w = st.slider(f"وزن SST ({reg_name})", 0.0, 1.0, 0.6, 0.05, key=f"sst_{reg_name}")
                 chl_w = round(1.0 - sst_w, 2)
                 st.caption(f"وزن کلروفیل-آ: **{chl_w}**")
@@ -239,7 +283,92 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
         record_error(f"خطا در استخراج جبهه برای منطقه {region_name}", ex)
     return None
 
-if st.sidebar.button("دریافت داده‌های به‌روز و اجرای تحلیل"):
+# تابع تولید رستر دقیق با PIL جهت حذف جابه‌جایی ۱۰ پیکسلی
+def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
+    try:
+        lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
+        lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+        if not lat_name or not lon_name:
+            return None, None
+
+        if extra_dims := [d for d in da.dims if d not in [lat_name, lon_name]]:
+            for d in extra_dims:
+                da = da.isel({d: 0})
+
+        # مرتب‌سازی صعودی مختصات
+        da = da.sortby(lat_name, ascending=True).sortby(lon_name, ascending=True)
+
+        lats = da[lat_name].values
+        lons = da[lon_name].values
+        data_arr = da.values.copy().astype(float)
+
+        ny, nx = data_arr.shape
+        if ny < 2 or nx < 2:
+            return None, None
+
+        # محاسبه دقیق مرز پیکسل‌ها (Pixel Boundary Extent)
+        dx = float(np.abs(lons[1] - lons[0])) / 2.0 if len(lons) > 1 else 0.025
+        dy = float(np.abs(lats[1] - lats[0])) / 2.0 if len(lats) > 1 else 0.025
+
+        grid_minx = float(lons[0]) - dx
+        grid_maxx = float(lons[-1]) + dx
+        grid_miny = float(lats[0]) - dy
+        grid_maxy = float(lats[-1]) + dy
+
+        valid_mask = ~np.isnan(data_arr) & (data_arr > 0)
+        if not valid_mask.any():
+            return None, None
+
+        # نرمال‌سازی داده برای اعمال Colormap
+        vmin, vmax = float(np.nanmin(data_arr[valid_mask])), float(np.nanmax(data_arr[valid_mask]))
+        norm_arr = np.zeros_like(data_arr)
+        if vmax > vmin:
+            norm_arr = (data_arr - vmin) / (vmax - vmin)
+
+        colormap = cm.get_cmap(cmap_name)
+        rgba_img = colormap(norm_arr)
+        rgba_img[~valid_mask] = [0.0, 0.0, 0.0, 0.0]
+
+        # معکوس‌سازی عمودی: در PIL سطر اول بالای تصویر است، در حالی که lats[0] مربوط به جنوب (پایین) است
+        rgba_img = np.flipud(rgba_img)
+
+        img_uint8 = (rgba_img * 255.0).clip(0, 255).astype(np.uint8)
+        img = Image.fromarray(img_uint8, 'RGBA')
+
+        file_path = os.path.join(out_dir, f"{label}_{reg_name.replace(' ', '_')}.png")
+        img.save(file_path)
+
+        bounds = [[grid_miny, grid_minx], [grid_maxy, grid_maxx]]
+        return file_path, bounds
+    except Exception as ex:
+        record_error(f"خطا در رندر پیکسل برای {label} در {reg_name}", ex)
+        return None, None
+
+def load_and_crop_dataset(nc_path, shp_path):
+    if not nc_path or not os.path.exists(nc_path):
+        return None
+    try:
+        ds = xr.open_dataset(nc_path)
+        var_key = list(ds.data_vars.keys())[0]
+        da = ds[var_key]
+        
+        gdf = gpd.read_file(shp_path)
+        if gdf.crs is not None and gdf.crs != "EPSG:4326":
+            gdf = gdf.to_crs("EPSG:4326")
+            
+        minx, miny, maxx, maxy = gdf.total_bounds
+        lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
+        lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+        
+        if lat_name and lon_name:
+            da = da.sortby(lat_name, ascending=True).sortby(lon_name, ascending=True)
+            da_cropped = da.sel({lat_name: slice(miny - 0.05, maxy + 0.05), lon_name: slice(minx - 0.05, maxx + 0.05)})
+            return da_cropped
+    except Exception as ex:
+        record_error(f"خطا در برش داده {nc_path}", ex)
+    return None
+
+if st.sidebar.button("🚀 دریافت داده‌های به‌روز و اجرای تحلیل"):
     if not region_configs:
         st.error("لطفاً فایل فشرده شیپ‌فایل مناطق (.zip) را آپلود کنید.")
     else:
@@ -258,7 +387,7 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                 combined_region_gdf = gpd.GeoDataFrame(pd.concat(all_gdfs, ignore_index=True), crs="EPSG:4326")
                 minx, miny, maxx, maxy = combined_region_gdf.total_bounds
 
-                log_process("info", "در حال برقراری ارتباط با سرور و دریافت داده‌های SST و CHL کلی...", status)
+                log_process("info", "در حال برقراری ارتباط با سرور و دریافت داده‌های SST و CHL...", status)
                 try:
                     sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
                 except Exception as fetch_ex:
@@ -297,6 +426,8 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                     st.session_state.combined_fronts_gdf = pd.concat(all_front_gdfs, ignore_index=True) if all_front_gdfs else None
                     st.session_state.combined_region_gdf = combined_region_gdf
                     st.session_state.nc_out_list = nc_out_list
+                    st.session_state.sst_nc_path = sst_nc_path
+                    st.session_state.chl_nc_path = chl_nc_path
                     st.session_state.latest_date = latest_date
                     st.session_state.minx, st.session_state.miny, st.session_state.maxx, st.session_state.maxy = minx, miny, maxx, maxy
                     st.session_state.analysis_done = True
@@ -335,88 +466,62 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         zoom_start=6, tiles="OpenStreetMap"
     )
     
-    # ۱. تولید لایه‌های سه‌گانه مجزا (PFZ، SST، Chlorophyll-a) بدون هم‌پوشانی یا نام‌گذاری تکراری
+    # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a با انطباق پیکسل به پیکسل
     if st.session_state.nc_out_list:
         for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
+            
+            # (الف) لایه PFZ
             if nc_out and os.path.exists(nc_out):
                 try:
-                    with xr.open_dataset(nc_out) as ds_res:
-                        added_types = set()
+                    with xr.open_dataset(nc_out) as ds_pfz:
+                        var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
+                        da_pfz = ds_pfz[var_key].load()
                         
-                        for var_name in ds_res.data_vars:
-                            v_lower = var_name.lower()
-                            
-                            if "pfz" in v_lower and "pfz" not in added_types:
-                                label, cmap_name, is_show = "PFZ", "jet", True
-                                added_types.add("pfz")
-                            elif "sst" in v_lower and "sst" not in added_types:
-                                label, cmap_name, is_show = "SST", "coolwarm", False
-                                added_types.add("sst")
-                            elif ("chl" in v_lower or "chlor" in v_lower) and "chl" not in added_types:
-                                label, cmap_name, is_show = "Chlorophyll-a", "YlGn", False
-                                added_types.add("chl")
-                            else:
-                                continue
-
-                            da_var = ds_res[var_name].load()
-                            
-                            lat_name = next((d for d in da_var.dims if d.lower() in ['lat', 'latitude', 'y']), None)
-                            lon_name = next((d for d in da_var.dims if d.lower() in ['lon', 'longitude', 'x']), None)
-                            
-                            if not lat_name or not lon_name:
-                                continue
-
-                            if extra_dims := [d for d in da_var.dims if d not in [lat_name, lon_name]]:
-                                for d in extra_dims:
-                                    da_var = da_var.isel({d: 0})
-                            
-                            # مرتب‌سازی صعودی دقیق مختصات جغرافیایی جهت برطرف شدن انحراف vertical
-                            da_var = da_var.sortby(lat_name, ascending=True).sortby(lon_name, ascending=True)
-
-                            lats = da_var[lat_name].values
-                            lons = da_var[lon_name].values
-
-                            # محاسبه دقیق لبه سلول‌های پیکسل (Cell Edge Bounding Box)
-                            dx = float(np.abs(lons[1] - lons[0])) / 2.0 if len(lons) > 1 else 0.025
-                            dy = float(np.abs(lats[1] - lats[0])) / 2.0 if len(lats) > 1 else 0.025
-
-                            grid_minx = float(lons[0]) - dx
-                            grid_maxx = float(lons[-1]) + dx
-                            grid_miny = float(lats[0]) - dy
-                            grid_maxy = float(lats[-1]) + dy
-
-                            data_arr = da_var.values.copy()
-                            ny, nx = data_arr.shape
-
-                            cmap = plt.get_cmap(cmap_name).copy()
-                            cmap.set_bad(alpha=0.0)
-
-                            # رندر تصویر 1:1 دقیقاً هم‌اندازه آرایه داده (حذف پدینگ و مارجین سفارشی matplotlib)
-                            fig = plt.figure(figsize=(nx / 100.0, ny / 100.0), dpi=100)
-                            ax = fig.add_axes([0, 0, 1, 1])
-                            ax.set_axis_off()
-                            fig.patch.set_alpha(0.0)
-                            
-                            ax.imshow(
-                                data_arr, 
-                                cmap=cmap, 
-                                origin='lower', 
-                                interpolation='none'
-                            )
-                            
-                            overlay_path = os.path.join(output_dir, f"{label}_{reg_name.replace(' ', '_')}.png")
-                            fig.savefig(overlay_path, dpi=100, transparent=True)
-                            plt.close(fig)
-                            
+                        img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ", reg_name, "jet", output_dir)
+                        if img_path and bounds:
                             folium.raster_layers.ImageOverlay(
-                                image=overlay_path,
-                                bounds=[[grid_miny, grid_minx], [grid_maxy, grid_maxx]],
+                                image=img_path,
+                                bounds=bounds,
                                 opacity=0.65,
-                                name=f"{label} ({reg_name})",
-                                show=is_show
+                                name=f"PFZ ({reg_name})",
+                                show=True
                             ).add_to(m)
-                except Exception as img_ex:
-                    record_error(f"خطا در رندر تصویر Heatmap برای {reg_name}", img_ex)
+                except Exception as pfz_ex:
+                    record_error(f"خطا در ایجاد لایه PFZ منطقه {reg_name}", pfz_ex)
+
+            # (ب) لایه SST
+            if st.session_state.sst_nc_path:
+                try:
+                    da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
+                    if da_sst is not None:
+                        img_path_sst, bounds_sst = render_pixel_perfect_heatmap(da_sst, "SST", reg_name, "coolwarm", output_dir)
+                        if img_path_sst and bounds_sst:
+                            folium.raster_layers.ImageOverlay(
+                                image=img_path_sst,
+                                bounds=bounds_sst,
+                                opacity=0.65,
+                                name=f"SST ({reg_name})",
+                                show=False
+                            ).add_to(m)
+                except Exception as sst_ex:
+                    record_error(f"خطا در ایجاد لایه SST منطقه {reg_name}", sst_ex)
+
+            # (ج) لایه Chlorophyll-a
+            if st.session_state.chl_nc_path:
+                try:
+                    da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
+                    if da_chl is not None:
+                        img_path_chl, bounds_chl = render_pixel_perfect_heatmap(da_chl, "Chlorophyll-a", reg_name, "YlGn", output_dir)
+                        if img_path_chl and bounds_chl:
+                            folium.raster_layers.ImageOverlay(
+                                image=img_path_chl,
+                                bounds=bounds_chl,
+                                opacity=0.65,
+                                name=f"Chlorophyll-a ({reg_name})",
+                                show=False
+                            ).add_to(m)
+                except Exception as chl_ex:
+                    record_error(f"خطا در ایجاد لایه Chlorophyll-a منطقه {reg_name}", chl_ex)
 
     # ۲. رسم مرز مناطق
     folium.GeoJson(
@@ -443,7 +548,8 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                         bottom: 25px; left: 20px; width: 250px; height: 50px; 
                         z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
                         border: 2px solid #2B5B84; border-radius: 6px; 
-                        padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;">
+                        padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
+                        direction: rtl;">
                 تاریخ اخذ داده: {jalali_str}<br>
                 <span style="font-family: Arial, sans-serif; color: #333333; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
             </div>
