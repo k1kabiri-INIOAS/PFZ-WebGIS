@@ -29,7 +29,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-# مقداردهی متغیرهای Session State[cite: 4]
+# مقداردهی متغیرهای Session State برای ماندگاری اطلاعات
 if "error_logs" not in st.session_state:
     st.session_state.error_logs = []
 if "process_logs" not in st.session_state:
@@ -56,7 +56,7 @@ def log_process(msg_type, msg_text, status_obj=None):
 
 st.title("🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ)")
 
-# نمایش خطاهای سیستمی[cite: 4]
+# نمایش خطاهای سیستمی
 if st.session_state.error_logs:
     st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است:")
     all_logs_str = "\n".join(st.session_state.error_logs)
@@ -72,7 +72,7 @@ uploaded_shapefile_zip = st.sidebar.file_uploader(
     type="zip"
 )
 
-# استفاده از مسیر موقت و ایمن برای جلوگیری از خطای Permission Denied[cite: 4]
+# استفاده از مسیر موقت و ایمن برای جلوگیری از خطای Permission Denied
 output_dir = os.path.join(tempfile.gettempdir(), "Data_Processed")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -96,7 +96,7 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
         
         da = ds["pfz_index"]
         
-        # شناسایی ایمن ابعاد مکانی صرف نظر از ترتیب آنها[cite: 4]
+        # شناسایی ایمن ابعاد مکانی صرف نظر از ترتیب آنها
         lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
         lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
         
@@ -107,7 +107,7 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
         lats = ds[lat_name].values
         lons = ds[lon_name].values
         
-        # حذف ایمن ابعاد غیرمکانی (مانند time) در صورت وجود[cite: 4]
+        # حذف ایمن ابعاد غیرمکانی (مانند time) در صورت وجود
         if da.ndim > 2:
             non_spatial_dims = [d for d in da.dims if d not in [lat_name, lon_name]]
             for d in non_spatial_dims:
@@ -145,7 +145,7 @@ def generate_fronts_fallback(nc_path, output_geojson_path, user_threshold):
             cs = ax.contour(lon_grid, lat_grid, data_smoothed, levels=[t_val])
             extracted = []
             
-            # استفاده از ساختار جدید Matplotlib >= 3.8 جهت جلوگیری از خطای collections[cite: 4]
+            # استفاده از ساختار جدید Matplotlib >= 3.8 جهت جلوگیری از خطای collections
             for segs in cs.allsegs:
                 for poly in segs:
                     if len(poly) > 1:
@@ -306,6 +306,7 @@ if st.session_state.analysis_done and st.session_state.gdf is not None:
             if "pfz_index" in ds_res:
                 pfz_da = ds_res["pfz_index"]
                 
+                # مدیریت ابعاد اضافی در زمان نمایش نقشه
                 if pfz_da.ndim > 2:
                     lat_name_plot = next((d for d in pfz_da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
                     lon_name_plot = next((d for d in pfz_da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
