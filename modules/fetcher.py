@@ -1,5 +1,5 @@
 # File Name: fetcher.py
-# Description: Fixed tuple return, 8-day step alignment, and rioxarray-compatible spatial fallback.
+# Description: Fixed 3-tuple return for app.py, auto-date extraction, and robust fallback handling.
 
 import os
 import requests
@@ -11,8 +11,8 @@ from erddapy import ERDDAP
 
 def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
     """
-    Fetch near real-time SST and Chlorophyll-a data with robust ERDDAP retries
-    and spatial fallback metadata.
+    Fetch near real-time SST and Chlorophyll-a data from ERDDAP.
+    Returns: (sst_nc_path, chl_nc_path, latest_date_str)
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -21,11 +21,11 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
     
     sst_nc_path = os.path.join(output_dir, "raw_sst.nc")
     chl_nc_path = os.path.join(output_dir, "raw_chl.nc")
+    latest_date_str = end_date.strftime("%Y-%m-%d")
     
     def download_dataset(dataset_id, is_chl=False):
         nonlocal start_date, end_date
         max_retries = 5
-        # برای داده ۸ روزه کلروفیل، گام عقب‌گرد باید ۸ روز باشد
         step_days = 8 if is_chl else 3
         
         for attempt in range(max_retries):
@@ -60,7 +60,7 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
                 res = requests.get(url, timeout=30)
                 
                 if res.status_code == 200:
-                    return res.content
+                    return res.content, end_date.strftime("%Y-%m-%d")
                 elif res.status_code == 404:
                     print(f"[Warning] 404 for {dataset_id}. Shifting back by {step_days} days...")
                     end_date -= timedelta(days=step_days)
@@ -72,14 +72,15 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
                 end_date -= timedelta(days=step_days)
                 start_date -= timedelta(days=step_days)
                     
-        return None
+        return None, end_date.strftime("%Y-%m-%d")
 
     # 1. Fetch High-Res SST (MUR SST 1km)
-    sst_content = download_dataset("jplMURSST41", is_chl=False)
+    sst_content, sst_date = download_dataset("jplMURSST41", is_chl=False)
     if sst_content:
         with open(sst_nc_path, "wb") as f:
             f.write(sst_content)
         print("SST data downloaded successfully (MUR SST 1km).")
+        latest_date_str = sst_date
     else:
         print("[Warning] Live SST download failed. Generating spatial fallback...")
         latitudes = np.linspace(miny, maxy, 100)
@@ -91,13 +92,12 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
             {"analysed_sst": (["latitude", "longitude"], sst_vals)}, 
             coords={"latitude": latitudes, "longitude": longitudes}
         )
-        # تنظیم ابعاد و CRS جهت جلوگیری از خطای rioxarray
         fallback_ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=True)
         fallback_ds.rio.write_crs("EPSG:4326", inplace=True)
         fallback_ds.to_netcdf(sst_nc_path, engine="h5netcdf")
 
     # 2. Fetch Chlorophyll-a (erdVHNchla8day)
-    chl_content = download_dataset("erdVHNchla8day", is_chl=True)
+    chl_content, _ = download_dataset("erdVHNchla8day", is_chl=True)
     if chl_content:
         with open(chl_nc_path, "wb") as f:
             f.write(chl_content)
@@ -113,10 +113,9 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
             {"chla": (["latitude", "longitude"], chl_vals)}, 
             coords={"latitude": latitudes, "longitude": longitudes}
         )
-        # تنظیم ابعاد و CRS جهت جلوگیری از خطای rioxarray
         fallback_chl.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude", inplace=True)
         fallback_chl.rio.write_crs("EPSG:4326", inplace=True)
         fallback_chl.to_netcdf(chl_nc_path, engine="h5netcdf")
                    
-    # بازگرداندن دقیقاً ۲ مقدار برای رفع خطای Unpacking
-    return sst_nc_path, chl_nc_path
+    # تطابق دقیق با خروجی مورد انتظار app.py (۳ مقدار)
+    return sst_nc_path, chl_nc_path, latest_date_str
