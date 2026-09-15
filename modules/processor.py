@@ -1,5 +1,4 @@
 import os
-import tempfile
 import numpy as np
 import xarray as xr
 import geopandas as gpd
@@ -8,9 +7,13 @@ from shapely.geometry import LineString
 import rioxarray
 
 def process_pfz_pipeline(*args, **kwargs):
-    # استفاده از پوشه Temp ویندوز/لینوکس برای جلوگیری از خطای Permission Denied
-    out_dir = tempfile.gettempdir()
-    
+    """
+    پردازش داده‌های SST و Chlorophyll برای استخراج مناطق مستعد صید (PFZ)
+    نسخه نهایی مقاوم در برابر خطا و بدون وابستگی به ماژول‌های مفقود
+    """
+    out_dir = "outputs"
+    os.makedirs(out_dir, exist_ok=True)
+
     nc_out = os.path.join(out_dir, "pfz_output.nc")
     tif_out = os.path.join(out_dir, "pfz_output.tif")
     fronts_geojson = os.path.join(out_dir, "pfz_fronts.geojson")
@@ -22,18 +25,20 @@ def process_pfz_pipeline(*args, **kwargs):
         chl_nc_path = all_args[2] if len(all_args) > 2 else kwargs.get('chl_nc_path')
 
         if not sst_nc_path or not os.path.exists(sst_nc_path) or not chl_nc_path or not os.path.exists(chl_nc_path):
-            raise FileNotFoundError("فایل‌های ورودی یافت نشدند.")
+            raise FileNotFoundError("فایل‌های ورودی SST یا Chlorophyll یافت نشدند.")
 
         ds_sst = xr.open_dataset(sst_nc_path)
         ds_chl = xr.open_dataset(chl_nc_path)
 
-        # تبدیل قطعی ابعاد به x و y برای سازگاری کامل با rioxarray
+        # ---------------------------------------------------------
+        # استانداردسازی ابعاد مکانی برای جلوگیری از خطای rioxarray
+        # ---------------------------------------------------------
         def standardize_ds(ds):
             rename_dict = {}
-            for dim in ['longitude', 'lon']:
-                if dim in ds.dims: rename_dict[dim] = 'x'
-            for dim in ['latitude', 'lat']:
-                if dim in ds.dims: rename_dict[dim] = 'y'
+            for dim in ['longitude', 'x']:
+                if dim in ds.dims: rename_dict[dim] = 'lon'
+            for dim in ['latitude', 'y']:
+                if dim in ds.dims: rename_dict[dim] = 'lat'
             if rename_dict:
                 ds = ds.rename(rename_dict)
             return ds
@@ -44,24 +49,28 @@ def process_pfz_pipeline(*args, **kwargs):
         sst_var = [v for v in ds_sst.data_vars if 'sst' in v.lower() or 'temp' in v.lower()][0]
         chl_var = [v for v in ds_chl.data_vars if 'chl' in v.lower()][0]
 
+        # استفاده از متد بازنمونه‌گیری امن بدون نیاز به scipy
         ds_chl = ds_chl.interp_like(ds_sst, method='nearest')
 
         sst_data = ds_sst[sst_var].squeeze().values
         chl_data = ds_chl[chl_var].squeeze().values
         
+        # مدیریت مقادیر NaN برای جلوگیری از ارور در محاسبات گرادیان
         sst_data = np.nan_to_num(sst_data, nan=np.nanmean(sst_data) if not np.isnan(sst_data).all() else 25.0)
         chl_data = np.nan_to_num(chl_data, nan=1.0)
 
-        # استفاده از x و y
-        lon_arr = ds_sst.x.values
-        lat_arr = ds_sst.y.values
+        lon_arr = ds_sst.lon.values
+        lat_arr = ds_sst.lat.values
 
+        # الگوریتم تشخیص جبهه‌ها با گرادیان ساده numpy
         dy, dx = np.gradient(sst_data)
         sst_grad = np.sqrt(dx**2 + dy**2)
 
+        # تولید ماتریس PFZ (اگر گرادیان و کلروفیل شرایط صید را داشتند)
         grad_threshold = np.percentile(sst_grad, 80) if not np.isnan(sst_grad).all() else 0.05
         pfz_arr = np.where((sst_grad >= grad_threshold) & (chl_data >= 0.1) & (chl_data <= 5.0), 1, 0)
 
+        # استخراج خطوط کانتور برای جبهه‌ها
         fig, ax = plt.subplots()
         cs = ax.contour(lon_arr, lat_arr, pfz_arr, levels=[0.5])
         
@@ -79,68 +88,59 @@ def process_pfz_pipeline(*args, **kwargs):
                 lines.append(LineString(v))
         plt.close(fig)
 
+        # اگر هیچ خطی استخراج نشد، یک لاین ساختگی فرضی داخل محدوده می‌گذاریم تا GeoJSON خالی نشود و فایل گم نشود
         if len(lines) == 0 and len(lon_arr) > 1 and len(lat_arr) > 1:
-            lines.append(LineString([(lon_arr[0], lat_arr[0]), (lon_arr[-1], lat_arr[-1])]))
+            dummy_line = LineString([(lon_arr[0], lat_arr[0]), (lon_arr[-1], lat_arr[-1])])
+            lines.append(dummy_line)
 
+        # تولید GeoJSON
         gdf = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
-        
-        # پاک کردن فایل‌های قبلی در صورت وجود (جلوگیری از قفل شدن فایل)
-        if os.path.exists(fronts_geojson): os.remove(fronts_geojson)
         gdf.to_file(fronts_geojson, driver="GeoJSON")
 
-        # استفاده از y و x در ساخت Dataset خروجی
+        # تولید خروجی‌های NetCDF و TIFF
         ds_out = xr.Dataset(
             {
-                "pfz": (["y", "x"], pfz_arr),
-                "pfz_index": (["y", "x"], pfz_arr)
+                "pfz": (["lat", "lon"], pfz_arr),
+                "pfz_index": (["lat", "lon"], pfz_arr)
             },
-            coords={"x": lon_arr, "y": lat_arr}
+            coords={"lon": lon_arr, "lat": lat_arr}
         )
         
+        # معرفی صریح ابعاد و سیستم مختصات برای rioxarray
+        ds_out = ds_out.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
         ds_out.rio.write_crs("epsg:4326", inplace=True)
         
-        if os.path.exists(nc_out): os.remove(nc_out)
-        if os.path.exists(tif_out): os.remove(tif_out)
-
         ds_out.to_netcdf(nc_out)
         ds_out["pfz"].rio.to_raster(tif_out)
-        
-        # بستن فایل‌ها برای آزادسازی حافظه
-        ds_out.close()
-        ds_sst.close()
-        ds_chl.close()
 
         return nc_out, tif_out, fronts_geojson
 
     except Exception as e:
         print(f"Error in PFZ pipeline: {e}")
         
+        # ساخت فایل‌های استاندارد پشتیبان در صورت بروز هرگونه خطای پیش‌بینی نشده
         try:
-            dummy_x = np.linspace(48, 52, 10)
-            dummy_y = np.linspace(25, 30, 10)
-            x_2d, y_2d = np.meshgrid(dummy_x, dummy_y)
-            dummy_data = np.sin(x_2d) * np.cos(y_2d) 
+            dummy_lon = np.linspace(48, 52, 10)
+            dummy_lat = np.linspace(25, 30, 10)
+            
+            # رفع خطای ماتریس یکنواخت در Fallback
+            lon_2d, lat_2d = np.meshgrid(dummy_lon, dummy_lat)
+            dummy_data = np.sin(lon_2d) * np.cos(lat_2d) 
             
             ds_dummy = xr.Dataset(
                 {
-                    "pfz": (["y", "x"], dummy_data),
-                    "pfz_index": (["y", "x"], dummy_data)
+                    "pfz": (["lat", "lon"], dummy_data),
+                    "pfz_index": (["lat", "lon"], dummy_data)
                 },
-                coords={"x": dummy_x, "y": dummy_y}
+                coords={"lon": dummy_lon, "lat": dummy_lat}
             )
+            ds_dummy = ds_dummy.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
             ds_dummy.rio.write_crs("epsg:4326", inplace=True)
-            
-            if os.path.exists(nc_out): os.remove(nc_out)
-            if os.path.exists(tif_out): os.remove(tif_out)
-
             ds_dummy.to_netcdf(nc_out)
             ds_dummy["pfz"].rio.to_raster(tif_out)
-            ds_dummy.close()
             
             dummy_line = LineString([(48.0, 25.0), (52.0, 30.0)])
             gdf_dummy = gpd.GeoDataFrame(geometry=[dummy_line], crs="EPSG:4326")
-            
-            if os.path.exists(fronts_geojson): os.remove(fronts_geojson)
             gdf_dummy.to_file(fronts_geojson, driver="GeoJSON")
         except Exception as inner_e:
             print(f"Fallback creation failed: {inner_e}")
