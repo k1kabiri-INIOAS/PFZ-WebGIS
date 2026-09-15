@@ -1,5 +1,5 @@
 # File Path: modules/processor.py
-# Description: Updated PFZ processing pipeline compatible with app.py imports and rioxarray spatial metadata.
+# Description: Fixed 2D dimension slicing for np.gradient and explicit DataArray spatial mapping for rioxarray.
 
 import os
 import numpy as np
@@ -12,7 +12,6 @@ import rioxarray
 def process_pfz_pipeline(*args, **kwargs):
     """
     پردازش داده‌های SST و Chlorophyll برای استخراج مناطق مستعد صید (PFZ)
-    نسخه نهایی مقاوم در برابر خطا و سازگار با app.py
     """
     out_dir = "outputs"
     os.makedirs(out_dir, exist_ok=True)
@@ -33,9 +32,6 @@ def process_pfz_pipeline(*args, **kwargs):
         ds_sst = xr.open_dataset(sst_nc_path)
         ds_chl = xr.open_dataset(chl_nc_path)
 
-        # ---------------------------------------------------------
-        # استانداردسازی ابعاد مکانی برای جلوگیری از خطای rioxarray
-        # ---------------------------------------------------------
         def standardize_ds(ds):
             rename_dict = {}
             for dim in ['longitude', 'x']:
@@ -49,19 +45,23 @@ def process_pfz_pipeline(*args, **kwargs):
         ds_sst = standardize_ds(ds_sst)
         ds_chl = standardize_ds(ds_chl)
 
-        # استخراج نام متغیرها با فال‌بک ایمن
         sst_vars = [v for v in ds_sst.data_vars if 'sst' in v.lower() or 'temp' in v.lower()]
         sst_var = sst_vars[0] if sst_vars else list(ds_sst.data_vars.keys())[0]
 
         chl_vars = [v for v in ds_chl.data_vars if 'chl' in v.lower()]
         chl_var = chl_vars[0] if chl_vars else list(ds_chl.data_vars.keys())[0]
 
-        # بازنمونه‌گیری شبکه کلروفیل منطبق با SST
         ds_chl = ds_chl.interp_like(ds_sst, method='nearest')
 
         sst_data = ds_sst[sst_var].squeeze().values
         chl_data = ds_chl[chl_var].squeeze().values
-        
+
+        # کاهش قطعی ابعاد به ۲ بعدی در صورت وجود لایه‌های زمانی/عمقی اضافی
+        while sst_data.ndim > 2:
+            sst_data = sst_data[0]
+        while chl_data.ndim > 2:
+            chl_data = chl_data[0]
+
         # مدیریت مقادیر NaN
         sst_data = np.nan_to_num(sst_data, nan=np.nanmean(sst_data) if not np.isnan(sst_data).all() else 25.0)
         chl_data = np.nan_to_num(chl_data, nan=1.0)
@@ -69,15 +69,14 @@ def process_pfz_pipeline(*args, **kwargs):
         lon_arr = ds_sst.lon.values
         lat_arr = ds_sst.lat.values
 
-        # الگوریتم تشخیص جبهه‌ها با گرادیان ساده numpy
+        # محاسبه گرادیان روی ماتریس ۲ بعدی
         dy, dx = np.gradient(sst_data)
         sst_grad = np.sqrt(dx**2 + dy**2)
 
-        # تولید ماتریس PFZ
         grad_threshold = np.percentile(sst_grad, 80) if not np.isnan(sst_grad).all() else 0.05
         pfz_arr = np.where((sst_grad >= grad_threshold) & (chl_data >= 0.1) & (chl_data <= 5.0), 1, 0)
 
-        # استخراج خطوط کانتور برای جبهه‌ها
+        # استخراج کانتور جبهه‌ها
         fig, ax = plt.subplots()
         cs = ax.contour(lon_arr, lat_arr, pfz_arr, levels=[0.5])
         
@@ -95,16 +94,14 @@ def process_pfz_pipeline(*args, **kwargs):
                 lines.append(LineString(v))
         plt.close(fig)
 
-        # خط فرضی در صورت عدم استخراج خطوط کانتور
         if len(lines) == 0 and len(lon_arr) > 1 and len(lat_arr) > 1:
             dummy_line = LineString([(lon_arr[0], lat_arr[0]), (lon_arr[-1], lat_arr[-1])])
             lines.append(dummy_line)
 
-        # تولید GeoJSON
         gdf = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
         gdf.to_file(fronts_geojson, driver="GeoJSON")
 
-        # تولید خروجی‌های NetCDF و TIFF
+        # ذخیره خروجی NetCDF
         ds_out = xr.Dataset(
             {
                 "pfz": (["lat", "lon"], pfz_arr),
@@ -112,20 +109,19 @@ def process_pfz_pipeline(*args, **kwargs):
             },
             coords={"lon": lon_arr, "lat": lat_arr}
         )
-        
-        # تعیین صریح ابعاد مکانی و سیستم مختصات برای rioxarray
-        ds_out = ds_out.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
-        ds_out.rio.write_crs("epsg:4326", inplace=True)
-        
         ds_out.to_netcdf(nc_out)
-        ds_out["pfz"].rio.to_raster(tif_out)
+
+        # تنظیم مشخصات مکانی روی DataArray و تولید فایل TIFF
+        pfz_da = ds_out["pfz"]
+        pfz_da = pfz_da.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
+        pfz_da = pfz_da.rio.write_crs("EPSG:4326", inplace=False)
+        pfz_da.rio.to_raster(tif_out)
 
         return nc_out, tif_out, fronts_geojson
 
     except Exception as e:
         print(f"Error in PFZ pipeline: {e}")
         
-        # فایل‌های پشتیبان در صورت بروز خطا
         try:
             dummy_lon = np.linspace(48, 52, 10)
             dummy_lat = np.linspace(25, 30, 10)
@@ -140,10 +136,12 @@ def process_pfz_pipeline(*args, **kwargs):
                 },
                 coords={"lon": dummy_lon, "lat": dummy_lat}
             )
-            ds_dummy = ds_dummy.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
-            ds_dummy.rio.write_crs("epsg:4326", inplace=True)
             ds_dummy.to_netcdf(nc_out)
-            ds_dummy["pfz"].rio.to_raster(tif_out)
+
+            dummy_da = ds_dummy["pfz"]
+            dummy_da = dummy_da.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=False)
+            dummy_da = dummy_da.rio.write_crs("EPSG:4326", inplace=False)
+            dummy_da.rio.to_raster(tif_out)
             
             dummy_line = LineString([(48.0, 25.0), (52.0, 30.0)])
             gdf_dummy = gpd.GeoDataFrame(geometry=[dummy_line], crs="EPSG:4326")
