@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with dynamic per-region heatmaps and satellite data date display.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with accurate Heatmap Geo-referencing and dual (Jalali/Gregorian) date displays.
 
 import os
 import sys
@@ -33,6 +33,44 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
+# تابع تبدیل تاریخ میلادی به شمسی (بدون نیاز به کتابخانه خارجی)
+def gregorian_to_jalali(gy, gm, gd):
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    if gy > 1600:
+        jy = 979
+        gy -= 1600
+    else:
+        jy = 0
+        gy -= 621
+    gy2 = gy if gm > 2 else gy - 1
+    days = (365 * gy) + ((gy2 + 3) // 4) - ((gy2 + 99) // 100) + ((gy2 + 399) // 400) + g_d_m[gm - 1] + gd - 1
+    jy += 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jm = 1 + (days // 31)
+        jd = 1 + (days % 31)
+    else:
+        jm = 7 + ((days - 186) // 30)
+        jd = 1 + ((days - 186) % 30)
+    return jy, jm, jd
+
+def parse_date_formats(date_str):
+    if not date_str:
+        return None, None
+    try:
+        dt = pd.to_datetime(date_str)
+        greg_str = dt.strftime("%Y-%m-%d")
+        jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
+        jalali_str = f"{jy}/{jm:02d}/{jd:02d}"
+        return greg_str, jalali_str
+    except Exception:
+        return str(date_str), None
+
 # مقداردهی متغیرهای Session State برای ماندگاری اطلاعات
 if "error_logs" not in st.session_state:
     st.session_state.error_logs = []
@@ -59,7 +97,6 @@ def log_process(msg_type, msg_text, status_obj=None):
 
 st.title("🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ)")
 
-# نمایش خطاهای سیستمی
 if st.session_state.error_logs:
     st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است:")
     all_logs_str = "\n".join(st.session_state.error_logs)
@@ -78,7 +115,6 @@ uploaded_shapefile_zip = st.sidebar.file_uploader(
 output_dir = os.path.join(tempfile.gettempdir(), "Data_Processed")
 os.makedirs(output_dir, exist_ok=True)
 
-# استخراج فایل‌های شیپ‌فایل و ساخت منوی پویا برای هر منطقه
 region_configs = {}
 if uploaded_shapefile_zip is not None:
     extract_path = os.path.join(output_dir, "extracted_shapes")
@@ -211,7 +247,6 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
         st.session_state.process_logs = []
         with st.status("🚀 شروع فرآیند پردازش داده‌های مکانی چندمنطقه‌ای...", expanded=True) as status:
             try:
-                # ۱. ادغام محدوده مناطق برای محاسبه Bounding Box کلی
                 log_process("info", "در حال استخراج و خواندن شیپ‌فایل‌های منطقه‌ای...", status)
                 all_gdfs = []
                 for reg_name, cfg in region_configs.items():
@@ -224,7 +259,6 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                 combined_region_gdf = gpd.GeoDataFrame(pd.concat(all_gdfs, ignore_index=True), crs="EPSG:4326")
                 minx, miny, maxx, maxy = combined_region_gdf.total_bounds
 
-                # ۲. دریافت داده‌های ماهواره‌ای و استخراج تاریخ میلادی
                 log_process("info", "در حال برقراری ارتباط با سرور و دریافت داده‌های SST و CHL کلی...", status)
                 try:
                     sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
@@ -233,12 +267,12 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                     sst_nc_path, chl_nc_path, latest_date = None, None, None
 
                 if sst_nc_path and chl_nc_path:
-                    log_process("success", f"داده‌های ماهواره‌ای با موفقیت دریافت شدند. (تاریخ: {latest_date})", status)
+                    greg_d, jalali_d = parse_date_formats(latest_date)
+                    log_process("success", f"داده‌های ماهواره‌ای با موفقیت دریافت شدند. (تاریخ شمسی: {jalali_d} | Date: {greg_d})", status)
                     
                     all_front_gdfs = []
                     nc_out_list = []
 
-                    # ۳. پردازش جداگانه هر منطقه با وزن‌ها و آستانه‌های اختصاصی
                     for reg_name, cfg in region_configs.items():
                         log_process("info", f"در حال پردازش **{reg_name}** (وزن SST: {cfg['sst_weight']} | آستانه: {cfg['threshold']})...", status)
                         
@@ -292,25 +326,22 @@ if st.session_state.process_logs:
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های نقشه حرارتی (Heatmap)")
     
-    # نمایش تاریخ داده‌های ماهواره‌ای به میلادی در بالای نقشه
-    if st.session_state.latest_date:
-        st.info(f"📅 **تاریخ داده‌های ماهواره‌ای مورد استفاده (میلادی):** `{st.session_state.latest_date}`")
+    greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
+    
+    # نمایش تاریخ‌های شمسی و میلادی بالای نقشه
+    if greg_str and jalali_str:
+        st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str}` | **Date:** `{greg_str}`")
 
     m = folium.Map(
         location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
         zoom_start=6, tiles="OpenStreetMap"
     )
     
-    # ۱. تولید و افزودن لایه Heatmap به تفکیک مناطق
+    # ۱. تولید و افزودن دقیق لایه Heatmap با جئو‌رفرنس صحیح برای هر منطقه
     if st.session_state.nc_out_list:
         for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
             if nc_out and os.path.exists(nc_out):
                 try:
-                    reg_gdf = gpd.read_file(reg_shp_path)
-                    if reg_gdf.crs is not None and reg_gdf.crs != "EPSG:4326":
-                        reg_gdf = reg_gdf.to_crs("EPSG:4326")
-                    r_minx, r_miny, r_maxx, r_maxy = reg_gdf.total_bounds
-
                     with xr.open_dataset(nc_out) as ds_res:
                         var_key = "pfz_index" if "pfz_index" in ds_res else list(ds_res.data_vars.keys())[0]
                         pfz_da = ds_res[var_key].load()
@@ -322,19 +353,42 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             for d in da_dim:
                                 pfz_da = pfz_da.isel({d: 0})
                         
-                        fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
-                        ax.set_axis_off()
-                        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+                        lats = pfz_da[lat_name_plot].values
+                        lons = pfz_da[lon_name_plot].values
                         
-                        pfz_da.plot.imshow(ax=ax, cmap="jet", alpha=0.5, add_colorbar=False)
+                        grid_minx, grid_maxx = float(np.nanmin(lons)), float(np.nanmax(lons))
+                        grid_miny, grid_maxy = float(np.nanmin(lats)), float(np.nanmax(lats))
+
+                        data_arr = pfz_da.values.copy()
+                        
+                        # در صورت معکوس بودن محور lat، تصویر جهت درستی داشته باشد
+                        if lats[0] > lats[-1]:
+                            data_arr = np.flipud(data_arr)
+
+                        # ساخت شکل دقیق بدون Margin برای جئورفرنس دقیق
+                        fig = plt.figure(figsize=(10, 10), dpi=200)
+                        ax = fig.add_axes([0, 0, 1, 1])
+                        ax.set_axis_off()
+                        fig.patch.set_alpha(0)
+                        
+                        ax.imshow(
+                            data_arr, 
+                            cmap="jet", 
+                            extent=[grid_minx, grid_maxx, grid_miny, grid_maxy], 
+                            origin='lower', 
+                            aspect='auto',
+                            interpolation='nearest'
+                        )
+                        ax.set_xlim(grid_minx, grid_maxx)
+                        ax.set_ylim(grid_miny, grid_maxy)
                         
                         overlay_path = os.path.join(output_dir, f"pfz_overlay_{reg_name.replace(' ', '_')}.png")
-                        fig.savefig(overlay_path, dpi=150, transparent=True, pad_inches=0)
+                        fig.savefig(overlay_path, dpi=200, transparent=True)
                         plt.close(fig)
                         
                         folium.raster_layers.ImageOverlay(
                             image=overlay_path,
-                            bounds=[[r_miny, r_minx], [r_maxy, r_maxx]],
+                            bounds=[[grid_miny, grid_minx], [grid_maxy, grid_maxx]],
                             opacity=0.6,
                             name=f"Heatmap Index ({reg_name})"
                         ).add_to(m)
@@ -359,15 +413,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         ).add_to(m)
         st.success(f"🎯 تعداد {len(st.session_state.combined_fronts_gdf)} جبهه صیادی در مجموع مناطق استخراج و رسم شد.")
 
-    # ۴. افزودن کادر شناور تاریخ روی خود نقشه Folium
-    if st.session_state.latest_date:
+    # ۴. کادر شناور روی نقشه با نمایش همزمان تاریخ شمسی و میلادی
+    if greg_str and jalali_str:
         date_box_html = f'''
             <div style="position: fixed; 
-                        bottom: 25px; left: 20px; width: 230px; height: 35px; 
-                        z-index:9999; font-size:13px; background-color: rgba(255, 255, 255, 0.9); 
+                        bottom: 25px; left: 20px; width: 220px; height: 50px; 
+                        z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
                         border: 2px solid #2B5B84; border-radius: 6px; 
-                        padding: 5px; font-weight: bold; text-align: center; color: #1E3A8A;">
-                📅 تاریخ داده‌ها: {st.session_state.latest_date}
+                        padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;">
+                تاریخ اخذ داده: {jalali_str}<br>
+                <span style="font-family: Arial, sans-serif; color: #333333;">Date: {greg_str}</span>
             </div>
         '''
         m.get_root().html.add_child(folium.Element(date_box_html))
