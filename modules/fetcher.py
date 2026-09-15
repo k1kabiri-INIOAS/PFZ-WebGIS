@@ -14,39 +14,75 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
     """
     os.makedirs(output_dir, exist_ok=True)
     
-    end_date = datetime.utcnow() - timedelta(days=3)
+    # تنظیم اولیه تاریخ
+    end_date = datetime.utcnow() - timedelta(days=2)
     start_date = end_date - timedelta(days=8)
-    
-    time_start_str = start_date.strftime("%Y-%m-%dT00:00:00Z")
-    time_end_str = end_date.strftime("%Y-%m-%dT00:00:00Z")
-    
-    print(f"Fetching Near Real-Time data from {time_start_str} to {time_end_str}...")
     
     sst_nc_path = os.path.join(output_dir, "raw_sst.nc")
     chl_nc_path = os.path.join(output_dir, "raw_chl.nc")
     
-    # 1. Fetch SST Data
-    try:
-        e_sst = ERDDAP(server="https://coastwatch.pfeg.noaa.gov/erddap/", protocol="griddap")
-        e_sst.dataset_id = "ncdcOisst21Agg"
-        e_sst.axis_names = {"longitude": "longitude", "latitude": "latitude", "time": "time"}
-        e_sst.constraints.update({
-            "time>=": time_start_str,
-            "time<=": time_end_str,
-            "latitude>=": str(miny),
-            "latitude<=": str(maxy),
-            "longitude>=": str(minx),
-            "longitude<=": str(maxx),
-        })
+    def download_dataset(dataset_id, is_chl=False):
+        nonlocal start_date, end_date
+        max_retries = 4
         
-        url_sst = e_sst.get_download_url(response="nc")
-        res_sst = requests.get(url_sst, timeout=30)
-        res_sst.raise_for_status()
+        for attempt in range(max_retries):
+            time_start_str = start_date.strftime("%Y-%m-%dT00:00:00Z")
+            time_end_str = end_date.strftime("%Y-%m-%dT00:00:00Z")
+            
+            print(f"Fetching {dataset_id} from {time_start_str} to {time_end_str}...")
+            
+            try:
+                e = ERDDAP(server="https://coastwatch.pfeg.noaa.gov/erddap/", protocol="griddap")
+                e.dataset_id = dataset_id
+                
+                constraints = {
+                    "time>=": time_start_str,
+                    "time<=": time_end_str,
+                    "latitude>=": str(miny),
+                    "latitude<=": str(maxy),
+                    "longitude>=": str(minx),
+                    "longitude<=": str(maxx),
+                }
+                
+                if is_chl:
+                    e.axis_names = {"longitude": "longitude", "latitude": "latitude", "time": "time", "altitude": "altitude"}
+                    constraints["altitude>="] = "0.0"
+                    constraints["altitude<="] = "0.0"
+                else:
+                    e.axis_names = {"longitude": "longitude", "latitude": "latitude", "time": "time"}
+                    
+                e.constraints.update(constraints)
+                
+                url = e.get_download_url(response="nc")
+                res = requests.get(url, timeout=30)
+                
+                if res.status_code == 200:
+                    return res.content, time_end_str
+                elif res.status_code == 404:
+                    print(f"[Warning] 404 Client Error for {dataset_id} at {time_end_str}. Shifting dates back by 3 days...")
+                    end_date -= timedelta(days=3)
+                    start_date -= timedelta(days=3)
+                else:
+                    res.raise_for_status()
+            except Exception as ex:
+                if "404" in str(ex):
+                    print(f"[Warning] 404 Client Error caught for {dataset_id}. Shifting dates back by 3 days...")
+                    end_date -= timedelta(days=3)
+                    start_date -= timedelta(days=3)
+                else:
+                    print(f"[Error] Failed to fetch {dataset_id}: {ex}")
+                    break
+                    
+        return None, time_end_str
+
+    # 1. Fetch SST Data
+    sst_content, final_end_str = download_dataset("ncdcOisst21Agg", is_chl=False)
+    if sst_content:
         with open(sst_nc_path, "wb") as f:
-            f.write(res_sst.content)
+            f.write(sst_content)
         print("SST data downloaded successfully.")
-    except Exception as e:
-        print(f"[Warning] Live SST download failed: {e}. Using spatial fallback.")
+    else:
+        print("[Warning] Live SST download failed entirely. Using spatial fallback.")
         latitudes = np.linspace(miny, maxy, 100)
         longitudes = np.linspace(minx, maxx, 100)
         lon_2d, lat_2d = np.meshgrid(longitudes, latitudes)
@@ -57,29 +93,14 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
         )
         fallback_ds.to_netcdf(sst_nc_path, engine="h5netcdf")
 
-    # 2. Fetch Chlorophyll-a Data (with fallback)
-    try:
-        e_chl = ERDDAP(server="https://coastwatch.pfeg.noaa.gov/erddap/", protocol="griddap")
-        e_chl.dataset_id = "erdVHNchla8day"
-        e_chl.axis_names = {"longitude": "longitude", "latitude": "latitude", "time": "time", "altitude": "altitude"}
-        e_chl.constraints.update({
-            "time>=": time_start_str,
-            "time<=": time_end_str,
-            "altitude>=": "0.0",
-            "altitude<=": "0.0",
-            "latitude>=": str(miny),
-            "latitude<=": str(maxy),
-            "longitude>=": str(minx),
-            "longitude<=": str(maxx),
-        })
-        url_chl = e_chl.get_download_url(response="nc")
-        res_chl = requests.get(url_chl, timeout=30)
-        res_chl.raise_for_status()
+    # 2. Fetch Chlorophyll-a Data
+    chl_content, _ = download_dataset("erdVHNchla8day", is_chl=True)
+    if chl_content:
         with open(chl_nc_path, "wb") as f:
-            f.write(res_chl.content)
+            f.write(chl_content)
         print("Chlorophyll-a data downloaded successfully.")
-    except Exception as e:
-        print(f"[Warning] Live Chlorophyll download failed: {e}. Using spatial fallback.")
+    else:
+        print("[Warning] Live Chlorophyll download failed entirely. Using spatial fallback.")
         latitudes = np.linspace(miny, maxy, 100)
         longitudes = np.linspace(minx, maxx, 100)
         lon_2d, lat_2d = np.meshgrid(longitudes, latitudes)
@@ -90,4 +111,4 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
         )
         fallback_chl.to_netcdf(chl_nc_path, engine="h5netcdf")
                    
-    return sst_nc_path, chl_nc_path, time_end_str
+    return sst_nc_path, chl_nc_path, final_end_str

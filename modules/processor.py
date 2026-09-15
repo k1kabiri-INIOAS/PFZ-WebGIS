@@ -30,6 +30,22 @@ def process_pfz_pipeline(*args, **kwargs):
         ds_sst = xr.open_dataset(sst_nc_path)
         ds_chl = xr.open_dataset(chl_nc_path)
 
+        # ---------------------------------------------------------
+        # استانداردسازی ابعاد مکانی برای جلوگیری از خطای rioxarray
+        # ---------------------------------------------------------
+        def standardize_ds(ds):
+            rename_dict = {}
+            for dim in ['longitude', 'x']:
+                if dim in ds.dims: rename_dict[dim] = 'lon'
+            for dim in ['latitude', 'y']:
+                if dim in ds.dims: rename_dict[dim] = 'lat'
+            if rename_dict:
+                ds = ds.rename(rename_dict)
+            return ds
+
+        ds_sst = standardize_ds(ds_sst)
+        ds_chl = standardize_ds(ds_chl)
+
         sst_var = [v for v in ds_sst.data_vars if 'sst' in v.lower() or 'temp' in v.lower()][0]
         chl_var = [v for v in ds_chl.data_vars if 'chl' in v.lower()][0]
 
@@ -89,6 +105,9 @@ def process_pfz_pipeline(*args, **kwargs):
             },
             coords={"lon": lon_arr, "lat": lat_arr}
         )
+        
+        # معرفی صریح ابعاد و سیستم مختصات برای rioxarray
+        ds_out = ds_out.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
         ds_out.rio.write_crs("epsg:4326", inplace=True)
         
         ds_out.to_netcdf(nc_out)
@@ -103,7 +122,10 @@ def process_pfz_pipeline(*args, **kwargs):
         try:
             dummy_lon = np.linspace(48, 52, 10)
             dummy_lat = np.linspace(25, 30, 10)
-            dummy_data = np.ones((10, 10))
+            
+            # رفع خطای ماتریس یکنواخت در Fallback
+            lon_2d, lat_2d = np.meshgrid(dummy_lon, dummy_lat)
+            dummy_data = np.sin(lon_2d) * np.cos(lat_2d) 
             
             ds_dummy = xr.Dataset(
                 {
@@ -112,6 +134,7 @@ def process_pfz_pipeline(*args, **kwargs):
                 },
                 coords={"lon": dummy_lon, "lat": dummy_lat}
             )
+            ds_dummy = ds_dummy.rio.set_spatial_dims(x_dim="lon", y_dim="lat")
             ds_dummy.rio.write_crs("epsg:4326", inplace=True)
             ds_dummy.to_netcdf(nc_out)
             ds_dummy["pfz"].rio.to_raster(tif_out)
