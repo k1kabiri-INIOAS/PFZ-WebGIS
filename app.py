@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps (PFZ, SST, Chlorophyll-a), RTL layout, and Persian typography.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, and updated Matplotlib colormap API.
 
 import os
 import sys
@@ -14,7 +14,6 @@ import geopandas as gpd
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 from PIL import Image
 import folium
 from shapely.geometry import LineString
@@ -283,7 +282,6 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
         record_error(f"خطا در استخراج جبهه برای منطقه {region_name}", ex)
     return None
 
-# تابع تولید رستر دقیق با PIL جهت حذف جابه‌جایی ۱۰ پیکسلی
 def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
     try:
         lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
@@ -325,11 +323,12 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
         if vmax > vmin:
             norm_arr = (data_arr - vmin) / (vmax - vmin)
 
-        colormap = cm.get_cmap(cmap_name)
+        # اصلاح متد دریافت Colormap جهت سازگاری با نسخه‌های جدید Matplotlib
+        colormap = plt.get_cmap(cmap_name)
         rgba_img = colormap(norm_arr)
         rgba_img[~valid_mask] = [0.0, 0.0, 0.0, 0.0]
 
-        # معکوس‌سازی عمودی: در PIL سطر اول بالای تصویر است، در حالی که lats[0] مربوط به جنوب (پایین) است
+        # معکوس‌سازی عمودی جهت انطباق محور Y در PIL
         rgba_img = np.flipud(rgba_img)
 
         img_uint8 = (rgba_img * 255.0).clip(0, 255).astype(np.uint8)
@@ -466,7 +465,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         zoom_start=6, tiles="OpenStreetMap"
     )
     
-    # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a با انطباق پیکسل به پیکسل
+    # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
     if st.session_state.nc_out_list:
         for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
             
