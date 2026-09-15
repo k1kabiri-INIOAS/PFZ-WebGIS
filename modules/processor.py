@@ -1,11 +1,12 @@
 # File Path: modules/processor.py
-# Description: Ocean-only PFZ processing with land masking, ROI clipping, and file handle cleanup.
+# Description: Ocean front detection with land-boundary erosion and complementary weighting.
 
 import os
 import numpy as np
 import xarray as xr
 import geopandas as gpd
 import matplotlib.pyplot as plt
+from scipy.ndimage import binary_erosion
 from shapely.geometry import LineString
 import rioxarray
 
@@ -15,8 +16,11 @@ def process_pfz_pipeline(*args, **kwargs):
     sst_nc_path = all_args[1] if len(all_args) > 1 else kwargs.get('sst_nc_path')
     chl_nc_path = all_args[2] if len(all_args) > 2 else kwargs.get('chl_nc_path')
     out_dir = all_args[3] if len(all_args) > 3 else kwargs.get('output_dir', 'outputs')
+    
+    # وزن یکپارچه: SST بین ۰ تا ۱، کلروفیل متمم آن
     sst_weight = float(all_args[4]) if len(all_args) > 4 else float(kwargs.get('sst_weight', 0.5))
-    chl_weight = float(all_args[5]) if len(all_args) > 5 else float(kwargs.get('chl_weight', 0.5))
+    sst_weight = np.clip(sst_weight, 0.0, 1.0)
+    chl_weight = 1.0 - sst_weight
 
     os.makedirs(out_dir, exist_ok=True)
     nc_out = os.path.join(out_dir, "pfz_output.nc")
@@ -24,7 +28,6 @@ def process_pfz_pipeline(*args, **kwargs):
     fronts_geojson = os.path.join(out_dir, "pfz_fronts.geojson")
 
     try:
-        # استفاده از Context Manager برای آزاد کردن قفل فایل‌ها
         with xr.open_dataset(sst_nc_path) as ds_sst_raw, xr.open_dataset(chl_nc_path) as ds_chl_raw:
             ds_sst = ds_sst_raw.load()
             ds_chl = ds_chl_raw.load()
@@ -53,7 +56,6 @@ def process_pfz_pipeline(*args, **kwargs):
         while sst_da.ndim > 2: sst_da = sst_da[0]
         while chl_da.ndim > 2: chl_da = chl_da[0]
 
-        # برش مکانی بر اساس شیپ‌فایل منطقه (در صورت وجود)
         if shapefile_path and os.path.exists(shapefile_path):
             try:
                 gdf_roi = gpd.read_file(shapefile_path)
@@ -67,51 +69,52 @@ def process_pfz_pipeline(*args, **kwargs):
         sst_vals = sst_da.values.copy()
         chl_vals = chl_da.values.copy()
 
-        # ماسک‌سازی پهنه دریا (حذف تمام مقادیر خشکی)
-        ocean_mask = ~np.isnan(sst_vals) & ~np.isnan(chl_vals)
-        if not ocean_mask.any():
-            raise ValueError("هیچ پیکسل دریایی معتبری در محدوده یافت نشد.")
+        # ۱. شناسايی اولیه ماسک دریا
+        raw_ocean_mask = ~np.isnan(sst_vals) & ~np.isnan(chl_vals)
+        if not raw_ocean_mask.any():
+            raise ValueError("هیچ پیکسل دریایی معتبری یافت نشد.")
 
-        # محاسبه گرادیان حرارتی فقط در پهنه دریا
-        sst_filled = np.where(ocean_mask, sst_vals, np.nanmean(sst_vals[ocean_mask]))
+        # ۲. فرسایش ماسک (حذف پیکسل‌های خط ساحلی برای جلوگیری از گرادیان کاذب ساحلی)
+        # iterations=2 باعث حذف ۲ پیکسل مرزی از ساحل می‌شود
+        ocean_mask = binary_erosion(raw_ocean_mask, structure=np.ones((3, 3)), iterations=2)
+
+        # ۳. محاسبه گرادیان SST روی دریا
+        sst_filled = np.where(raw_ocean_mask, sst_vals, np.nanmean(sst_vals[raw_ocean_mask]))
         dy, dx = np.gradient(sst_filled)
         sst_grad = np.sqrt(dx**2 + dy**2)
-        sst_grad[~ocean_mask] = 0.0  # صفر کردن گرادیان روی خشکی و خط ساحلی
 
-        # نرمال‌سازی گرادیان SST روی دریا
+        # نرمال‌سازی گرادیان فقط در محدوده عمیق‌تر از ساحل
         grad_ocean = sst_grad[ocean_mask]
-        g_min, g_max = np.nanmin(grad_ocean), np.nanmax(grad_ocean)
         norm_sst_grad = np.zeros_like(sst_grad)
-        if g_max > g_min:
+        if len(grad_ocean) > 0 and np.nanmax(grad_ocean) > np.nanmin(grad_ocean):
+            g_min, g_max = np.nanmin(grad_ocean), np.nanmax(grad_ocean)
             norm_sst_grad[ocean_mask] = (sst_grad[ocean_mask] - g_min) / (g_max - g_min)
 
-        # نرمال‌سازی کلروفیل روی دریا
+        # ۴. نرمال‌سازی کلروفیل
         chl_ocean = chl_vals[ocean_mask]
         chl_log = np.log1p(np.maximum(chl_vals, 0))
-        c_min, c_max = np.nanmin(chl_log[ocean_mask]), np.nanmax(chl_log[ocean_mask])
         norm_chl = np.zeros_like(chl_vals)
-        if c_max > c_min:
+        if len(chl_ocean) > 0 and np.nanmax(chl_log[ocean_mask]) > np.nanmin(chl_log[ocean_mask]):
+            c_min, c_max = np.nanmin(chl_log[ocean_mask]), np.nanmax(chl_log[ocean_mask])
             norm_chl[ocean_mask] = (chl_log[ocean_mask] - c_min) / (c_max - c_min)
 
-        # محاسبه شاخص وزن‌دار PFZ فقط برای دریا
-        tot_w = sst_weight + chl_weight
-        tot_w = 1.0 if tot_w <= 0 else tot_w
-
+        # ۵. ترکیب وزن‌دار متمم (w_sst + w_chl = 1.0)
         pfz_index_arr = np.full_like(sst_vals, np.nan)
-        pfz_index_arr[ocean_mask] = (sst_weight * norm_sst_grad[ocean_mask] + chl_weight * norm_chl[ocean_mask]) / tot_w
+        pfz_index_arr[ocean_mask] = (sst_weight * norm_sst_grad[ocean_mask]) + (chl_weight * norm_chl[ocean_mask])
 
         lon_arr = ds_sst.lon.values if 'lon' in ds_sst.coords else ds_sst.longitude.values
         lat_arr = ds_sst.lat.values if 'lat' in ds_sst.coords else ds_sst.latitude.values
 
-        # استخراج کانتور فقط از پیکسل‌های دریا
+        # ۶. استخراج کانتور جبهه‌ها (فقط پیکسل‌های دریا)
         contour_data = np.nan_to_num(pfz_index_arr, nan=0.0)
         fig, ax = plt.subplots()
-        cs = ax.contour(lon_arr, lat_arr, contour_data, levels=[0.45])
+        # استخراج کانتورهای با شاخص بالای 0.50
+        cs = ax.contour(lon_arr, lat_arr, contour_data, levels=[0.50])
         
         lines = []
         for segs in cs.allsegs:
             for poly in segs:
-                if len(poly) > 1:
+                if len(poly) > 2:  # حذف خطوط خیلی کوتاه
                     lines.append(LineString(poly))
         plt.close(fig)
 
