@@ -1,5 +1,5 @@
 # File Name: fetcher.py
-# Description: Module for fetching near real-time SST and Chlorophyll-a data from ERDDAP with robust fallback.
+# Description: Module for fetching near real-time SST (1km) and Chlorophyll-a (4km) data from ERDDAP with robust fallback.
 
 import os
 import requests
@@ -10,7 +10,8 @@ from erddapy import ERDDAP
 
 def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
     """
-    Fetch near real-time SST and Chlorophyll-a data dynamically with automated fallback support.
+    Fetch near real-time high-resolution SST and Chlorophyll-a data dynamically 
+    with automated fallback support.
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -21,7 +22,8 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
     sst_nc_path = os.path.join(output_dir, "raw_sst.nc")
     chl_nc_path = os.path.join(output_dir, "raw_chl.nc")
     
-    def download_dataset(dataset_id, is_chl=False):
+    # تابع کمکی برای دانلود بدون نیاز به پارامترهای اضافی مثل altitude
+    def download_dataset(dataset_id):
         nonlocal start_date, end_date
         max_retries = 4
         
@@ -44,12 +46,8 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
                     "longitude<=": str(maxx),
                 }
                 
-                if is_chl:
-                    e.axis_names = {"longitude": "longitude", "latitude": "latitude", "time": "time", "altitude": "altitude"}
-                    constraints["altitude>="] = "0.0"
-                    constraints["altitude<="] = "0.0"
-                else:
-                    e.axis_names = {"longitude": "longitude", "latitude": "latitude", "time": "time"}
+                # برای این دیتاست‌های سطح ۴ و ۳ نیازی به بعد ارتفاع نیست
+                e.axis_names = {"longitude": "longitude", "latitude": "latitude", "time": "time"}
                     
                 e.constraints.update(constraints)
                 
@@ -75,12 +73,12 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
                     
         return None, time_end_str
 
-    # 1. Fetch SST Data
-    sst_content, final_end_str = download_dataset("ncdcOisst21Agg", is_chl=False)
+    # 1. Fetch High-Res SST Data (JPL MUR SST - 1km)
+    sst_content, final_end_str = download_dataset("jplMURSST41")
     if sst_content:
         with open(sst_nc_path, "wb") as f:
             f.write(sst_content)
-        print("SST data downloaded successfully.")
+        print("SST data downloaded successfully (MUR SST 1km).")
     else:
         print("[Warning] Live SST download failed entirely. Using spatial fallback.")
         latitudes = np.linspace(miny, maxy, 100)
@@ -93,12 +91,12 @@ def fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir):
         )
         fallback_ds.to_netcdf(sst_nc_path, engine="h5netcdf")
 
-    # 2. Fetch Chlorophyll-a Data
-    chl_content, _ = download_dataset("erdVHNchla8day", is_chl=True)
+    # 2. Fetch High-Res Chlorophyll-a Data (MODIS-Aqua Daily - 4km)
+    chl_content, _ = download_dataset("erdMH1chla1day")
     if chl_content:
         with open(chl_nc_path, "wb") as f:
             f.write(chl_content)
-        print("Chlorophyll-a data downloaded successfully.")
+        print("Chlorophyll-a data downloaded successfully (MODIS Daily 4km).")
     else:
         print("[Warning] Live Chlorophyll download failed entirely. Using spatial fallback.")
         latitudes = np.linspace(miny, maxy, 100)
