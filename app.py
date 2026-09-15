@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with dynamic per-region weightings and threshold controls.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with dynamic per-region heatmaps and satellite data date display.
 
 import os
 import sys
@@ -40,7 +40,7 @@ if "process_logs" not in st.session_state:
     st.session_state.process_logs = []
 if "analysis_done" not in st.session_state:
     st.session_state.analysis_done = False
-for key in ["nc_out_list", "combined_fronts_gdf", "combined_region_gdf", "minx", "miny", "maxx", "maxy"]:
+for key in ["nc_out_list", "combined_fronts_gdf", "combined_region_gdf", "minx", "miny", "maxx", "maxy", "latest_date"]:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -224,16 +224,16 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                 combined_region_gdf = gpd.GeoDataFrame(pd.concat(all_gdfs, ignore_index=True), crs="EPSG:4326")
                 minx, miny, maxx, maxy = combined_region_gdf.total_bounds
 
-                # ۲. دریافت یکباره داده‌های ماهواره‌ای برای محدوده کلی
+                # ۲. دریافت داده‌های ماهواره‌ای و استخراج تاریخ میلادی
                 log_process("info", "در حال برقراری ارتباط با سرور و دریافت داده‌های SST و CHL کلی...", status)
                 try:
-                    sst_nc_path, chl_nc_path, _ = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
+                    sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
                 except Exception as fetch_ex:
                     record_error("خطا در ماژول fetch_near_realtime_data", fetch_ex)
-                    sst_nc_path, chl_nc_path = None, None
+                    sst_nc_path, chl_nc_path, latest_date = None, None, None
 
                 if sst_nc_path and chl_nc_path:
-                    log_process("success", "داده‌های ماهواره‌ای با موفقیت دریافت شدند.", status)
+                    log_process("success", f"داده‌های ماهواره‌ای با موفقیت دریافت شدند. (تاریخ: {latest_date})", status)
                     
                     all_front_gdfs = []
                     nc_out_list = []
@@ -264,6 +264,7 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
                     st.session_state.combined_fronts_gdf = pd.concat(all_front_gdfs, ignore_index=True) if all_front_gdfs else None
                     st.session_state.combined_region_gdf = combined_region_gdf
                     st.session_state.nc_out_list = nc_out_list
+                    st.session_state.latest_date = latest_date
                     st.session_state.minx, st.session_state.miny, st.session_state.maxx, st.session_state.maxy = minx, miny, maxx, maxy
                     st.session_state.analysis_done = True
                     status.update(label="تمام مراحل پردازش با موفقیت به پایان رسید!", state="complete")
@@ -289,14 +290,58 @@ if st.session_state.process_logs:
                 st.info(text)
 
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
-    st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه پس‌زمینه")
+    st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های نقشه حرارتی (Heatmap)")
     
+    # نمایش تاریخ داده‌های ماهواره‌ای به میلادی در بالای نقشه
+    if st.session_state.latest_date:
+        st.info(f"📅 **تاریخ داده‌های ماهواره‌ای مورد استفاده (میلادی):** `{st.session_state.latest_date}`")
+
     m = folium.Map(
         location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
         zoom_start=6, tiles="OpenStreetMap"
     )
     
-    # رسم مرز مناطق
+    # ۱. تولید و افزودن لایه Heatmap به تفکیک مناطق
+    if st.session_state.nc_out_list:
+        for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
+            if nc_out and os.path.exists(nc_out):
+                try:
+                    reg_gdf = gpd.read_file(reg_shp_path)
+                    if reg_gdf.crs is not None and reg_gdf.crs != "EPSG:4326":
+                        reg_gdf = reg_gdf.to_crs("EPSG:4326")
+                    r_minx, r_miny, r_maxx, r_maxy = reg_gdf.total_bounds
+
+                    with xr.open_dataset(nc_out) as ds_res:
+                        var_key = "pfz_index" if "pfz_index" in ds_res else list(ds_res.data_vars.keys())[0]
+                        pfz_da = ds_res[var_key].load()
+                        
+                        lat_name_plot = next((d for d in pfz_da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
+                        lon_name_plot = next((d for d in pfz_da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+                        
+                        if da_dim := [d for d in pfz_da.dims if d not in [lat_name_plot, lon_name_plot]]:
+                            for d in da_dim:
+                                pfz_da = pfz_da.isel({d: 0})
+                        
+                        fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
+                        ax.set_axis_off()
+                        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+                        
+                        pfz_da.plot.imshow(ax=ax, cmap="jet", alpha=0.5, add_colorbar=False)
+                        
+                        overlay_path = os.path.join(output_dir, f"pfz_overlay_{reg_name.replace(' ', '_')}.png")
+                        fig.savefig(overlay_path, dpi=150, transparent=True, pad_inches=0)
+                        plt.close(fig)
+                        
+                        folium.raster_layers.ImageOverlay(
+                            image=overlay_path,
+                            bounds=[[r_miny, r_minx], [r_maxy, r_maxx]],
+                            opacity=0.6,
+                            name=f"Heatmap Index ({reg_name})"
+                        ).add_to(m)
+                except Exception as img_ex:
+                    record_error(f"خطا در رندر تصویر Heatmap برای {reg_name}", img_ex)
+
+    # ۲. رسم مرز مناطق
     folium.GeoJson(
         st.session_state.combined_region_gdf,
         name="Region Boundaries",
@@ -304,7 +349,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         tooltip=folium.GeoJsonTooltip(fields=['Region'], aliases=['منطقه:'])
     ).add_to(m)
     
-    # رسم خطوط جبهه‌ها
+    # ۳. رسم خطوط جبهه‌ها
     if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
         folium.GeoJson(
             st.session_state.combined_fronts_gdf,
@@ -313,6 +358,19 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             tooltip=folium.GeoJsonTooltip(fields=['Region', 'Length_km', 'Threshold'], aliases=['منطقه:', 'طول (km):', 'آستانه:'])
         ).add_to(m)
         st.success(f"🎯 تعداد {len(st.session_state.combined_fronts_gdf)} جبهه صیادی در مجموع مناطق استخراج و رسم شد.")
+
+    # ۴. افزودن کادر شناور تاریخ روی خود نقشه Folium
+    if st.session_state.latest_date:
+        date_box_html = f'''
+            <div style="position: fixed; 
+                        bottom: 25px; left: 20px; width: 230px; height: 35px; 
+                        z-index:9999; font-size:13px; background-color: rgba(255, 255, 255, 0.9); 
+                        border: 2px solid #2B5B84; border-radius: 6px; 
+                        padding: 5px; font-weight: bold; text-align: center; color: #1E3A8A;">
+                📅 تاریخ داده‌ها: {st.session_state.latest_date}
+            </div>
+        '''
+        m.get_root().html.add_child(folium.Element(date_box_html))
 
     m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
     folium.LayerControl().add_to(m)
