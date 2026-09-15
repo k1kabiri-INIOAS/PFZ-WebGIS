@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with accurate Heatmap Geo-referencing and dual (Jalali/Gregorian) date displays.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-aligned Heatmap layers (PFZ, SST, Chl) and dual dates.
 
 import os
 import sys
@@ -33,7 +33,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-# تابع تبدیل تاریخ میلادی به شمسی (بدون نیاز به کتابخانه خارجی)
+# تابع تبدیل تاریخ میلادی به شمسی
 def gregorian_to_jalali(gy, gm, gd):
     g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
     if gy > 1600:
@@ -268,7 +268,7 @@ if st.sidebar.button("دریافت داده‌های به‌روز و اجرای
 
                 if sst_nc_path and chl_nc_path:
                     greg_d, jalali_d = parse_date_formats(latest_date)
-                    log_process("success", f"داده‌های ماهواره‌ای با موفقیت دریافت شدند. (تاریخ شمسی: {jalali_d} | Date: {greg_d})", status)
+                    log_process("success", f"داده‌های ماهواره‌ای با موفقیت دریافت شدند. (تاریخ اخذ داده: {jalali_d} | Data Acquisition Date: {greg_d})", status)
                     
                     all_front_gdfs = []
                     nc_out_list = []
@@ -328,70 +328,100 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
     
     greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
     
-    # نمایش تاریخ‌های شمسی و میلادی بالای نقشه
     if greg_str and jalali_str:
-        st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str}` | **Date:** `{greg_str}`")
+        st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str}` | **Data Acquisition Date:** `{greg_str}`")
 
     m = folium.Map(
         location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
         zoom_start=6, tiles="OpenStreetMap"
     )
     
-    # ۱. تولید و افزودن دقیق لایه Heatmap با جئو‌رفرنس صحیح برای هر منطقه
+    # ۱. تولید و افزودن لایه‌های Heatmap (PFZ Index، SST، Chlorophyll) با انطباق هندسی دقیق
     if st.session_state.nc_out_list:
+        var_labels = {
+            "pfz_index": ("شاخص تلفیقی PFZ", "jet"),
+            "sst": ("دمای سطح آب (SST)", "coolwarm"),
+            "chl": ("کلروفیل-آ (Chl-a)", "YlGn"),
+            "chlor_a": ("کلروفیل-آ (Chl-a)", "YlGn")
+        }
+
         for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
             if nc_out and os.path.exists(nc_out):
                 try:
                     with xr.open_dataset(nc_out) as ds_res:
-                        var_key = "pfz_index" if "pfz_index" in ds_res else list(ds_res.data_vars.keys())[0]
-                        pfz_da = ds_res[var_key].load()
-                        
-                        lat_name_plot = next((d for d in pfz_da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
-                        lon_name_plot = next((d for d in pfz_da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
-                        
-                        if da_dim := [d for d in pfz_da.dims if d not in [lat_name_plot, lon_name_plot]]:
-                            for d in da_dim:
-                                pfz_da = pfz_da.isel({d: 0})
-                        
-                        lats = pfz_da[lat_name_plot].values
-                        lons = pfz_da[lon_name_plot].values
-                        
-                        grid_minx, grid_maxx = float(np.nanmin(lons)), float(np.nanmax(lons))
-                        grid_miny, grid_maxy = float(np.nanmin(lats)), float(np.nanmax(lats))
+                        for var_name in ds_res.data_vars:
+                            if var_name not in var_labels and "pfz" not in var_name and "sst" not in var_name and "chl" not in var_name:
+                                continue
+                            
+                            disp_title, cmap_name = var_labels.get(var_name, (var_name.upper(), "jet"))
+                            pfz_da = ds_res[var_name].load()
+                            
+                            lat_name = next((d for d in pfz_da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
+                            lon_name = next((d for d in pfz_da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+                            
+                            if not lat_name or not lon_name:
+                                continue
 
-                        data_arr = pfz_da.values.copy()
-                        
-                        # در صورت معکوس بودن محور lat، تصویر جهت درستی داشته باشد
-                        if lats[0] > lats[-1]:
-                            data_arr = np.flipud(data_arr)
+                            # حذف ابعاد اضافی (مانند time یا depth)
+                            if da_dim := [d for d in pfz_da.dims if d not in [lat_name, lon_name]]:
+                                for d in da_dim:
+                                    pfz_da = pfz_da.isel({d: 0})
+                            
+                            # تنظیم ترتیب ابعاد به صورت استاندارد (lat, lon)
+                            pfz_da = pfz_da.transpose(lat_name, lon_name)
 
-                        # ساخت شکل دقیق بدون Margin برای جئورفرنس دقیق
-                        fig = plt.figure(figsize=(10, 10), dpi=200)
-                        ax = fig.add_axes([0, 0, 1, 1])
-                        ax.set_axis_off()
-                        fig.patch.set_alpha(0)
-                        
-                        ax.imshow(
-                            data_arr, 
-                            cmap="jet", 
-                            extent=[grid_minx, grid_maxx, grid_miny, grid_maxy], 
-                            origin='lower', 
-                            aspect='auto',
-                            interpolation='nearest'
-                        )
-                        ax.set_xlim(grid_minx, grid_maxx)
-                        ax.set_ylim(grid_miny, grid_maxy)
-                        
-                        overlay_path = os.path.join(output_dir, f"pfz_overlay_{reg_name.replace(' ', '_')}.png")
-                        fig.savefig(overlay_path, dpi=200, transparent=True)
-                        plt.close(fig)
-                        
-                        folium.raster_layers.ImageOverlay(
-                            image=overlay_path,
-                            bounds=[[grid_miny, grid_minx], [grid_maxy, grid_maxx]],
-                            opacity=0.6,
-                            name=f"Heatmap Index ({reg_name})"
-                        ).add_to(m)
+                            # مرتب‌سازی صعودی مختصات جهت جلوگیری از معکوس‌شدن و جابه‌جایی
+                            if pfz_da[lat_name].values[0] > pfz_da[lat_name].values[-1]:
+                                pfz_da = pfz_da.reindex({lat_name: pfz_da[lat_name].values[::-1]})
+                            if pfz_da[lon_name].values[0] > pfz_da[lon_name].values[-1]:
+                                pfz_da = pfz_da.reindex({lon_name: pfz_da[lon_name].values[::-1]})
+
+                            lats = pfz_da[lat_name].values
+                            lons = pfz_da[lon_name].values
+
+                            # محاسبه دقیق مرز پیکسل‌ها (Pixel Boundaries)
+                            dx = float(np.abs(lons[1] - lons[0])) / 2.0 if len(lons) > 1 else 0.0
+                            dy = float(np.abs(lats[1] - lats[0])) / 2.0 if len(lats) > 1 else 0.0
+
+                            grid_minx = float(lons[0]) - dx
+                            grid_maxx = float(lons[-1]) + dx
+                            grid_miny = float(lats[0]) - dy
+                            grid_maxy = float(lats[-1]) + dy
+
+                            data_arr = pfz_da.values.copy()
+
+                            cmap = plt.get_cmap(cmap_name).copy()
+                            cmap.set_bad(alpha=0.0)
+
+                            fig = plt.figure(figsize=(10, 10), dpi=200)
+                            ax = fig.add_axes([0, 0, 1, 1])
+                            ax.set_axis_off()
+                            fig.patch.set_alpha(0)
+                            
+                            ax.imshow(
+                                data_arr, 
+                                cmap=cmap, 
+                                extent=[grid_minx, grid_maxx, grid_miny, grid_maxy], 
+                                origin='lower', 
+                                aspect='auto',
+                                interpolation='nearest'
+                            )
+                            ax.set_xlim(grid_minx, grid_maxx)
+                            ax.set_ylim(grid_miny, grid_maxy)
+                            
+                            overlay_path = os.path.join(output_dir, f"{var_name}_overlay_{reg_name.replace(' ', '_')}.png")
+                            fig.savefig(overlay_path, dpi=200, transparent=True)
+                            plt.close(fig)
+                            
+                            # نمایش پیش‌فرض فقط برای شاخص PFZ فعال است؛ باقی لایه‌ها در کنترل لایه قابل روشن‌کردن هستند
+                            is_pfz = "pfz" in var_name
+                            folium.raster_layers.ImageOverlay(
+                                image=overlay_path,
+                                bounds=[[grid_miny, grid_minx], [grid_maxy, grid_maxx]],
+                                opacity=0.6,
+                                name=f"{disp_title} ({reg_name})",
+                                show=is_pfz
+                            ).add_to(m)
                 except Exception as img_ex:
                     record_error(f"خطا در رندر تصویر Heatmap برای {reg_name}", img_ex)
 
@@ -413,16 +443,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         ).add_to(m)
         st.success(f"🎯 تعداد {len(st.session_state.combined_fronts_gdf)} جبهه صیادی در مجموع مناطق استخراج و رسم شد.")
 
-    # ۴. کادر شناور روی نقشه با نمایش همزمان تاریخ شمسی و میلادی
+    # ۴. کادر شناور روی نقشه با عنوان Data Acquisition Date
     if greg_str and jalali_str:
         date_box_html = f'''
             <div style="position: fixed; 
-                        bottom: 25px; left: 20px; width: 220px; height: 50px; 
+                        bottom: 25px; left: 20px; width: 250px; height: 50px; 
                         z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
                         border: 2px solid #2B5B84; border-radius: 6px; 
                         padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;">
                 تاریخ اخذ داده: {jalali_str}<br>
-                <span style="font-family: Arial, sans-serif; color: #333333;">Date: {greg_str}</span>
+                <span style="font-family: Arial, sans-serif; color: #333333; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
             </div>
         '''
         m.get_root().html.add_child(folium.Element(date_box_html))
