@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, and live cursor coordinate tracking.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display with copy/DMS features, and interactive map marker placement.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -19,10 +19,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 import folium
-from folium.plugins import MousePosition
 from shapely.geometry import LineString
 from streamlit_folium import st_folium
 import scipy.ndimage as ndimage
+from branca.element import MacroElement
+from jinja2 import Template
 
 from modules.fetcher import fetch_near_realtime_data
 from modules.processor import process_pfz_pipeline
@@ -30,7 +31,138 @@ from modules.processor import process_pfz_pipeline
 warnings.filterwarnings("ignore")
 plt.switch_backend('Agg')
 
-st.set_page_config(page_title="سامانه مدیریت PFZ", layout="wide")
+st.set_page_config(page_title="سامانه مدیریت PFZ 🐟", page_icon="🐟", layout="wide")
+
+# ==========================================
+# ۱. کلاس ساخت کنترل سفارشی روی نقشه (JavaScript اختصاصی)
+# ==========================================
+class CustomMapFeatures(MacroElement):
+    """
+    تزریق کدهای جاوااسکریپت به نقشه جهت:
+    - نمایش لحظه‌ای مختصات
+    - سوئیچ بین فرمت‌های DD و DMS
+    - کپی در Clipboard و نمایش پیام Copied!
+    - ثبت مارکر تعاملی با کلیک روی نقشه
+    """
+    _template = Template("""
+    {% macro script(this, kwargs) %}
+    
+    var map = {{ this._parent.get_name() }};
+    
+    let useDMS = false;
+    let lastLatLng = null;
+    let currentMarker = null;
+
+    // تابع تبدیل فرمت اعشاری (DD) به درجه-دقیقه-ثانیه (DMS)
+    function toDMS(deg, isLat) {
+      const absolute = Math.abs(deg);
+      const degrees = Math.floor(absolute);
+      const minutesNotTruncated = (absolute - degrees) * 60;
+      const minutes = Math.floor(minutesNotTruncated);
+      const seconds = ((minutesNotTruncated - minutes) * 60).toFixed(1);
+      const direction = isLat ? (deg >= 0 ? 'N' : 'S') : (deg >= 0 ? 'E' : 'W');
+      return `${degrees}° ${minutes}' ${seconds}" ${direction}`;
+    }
+
+    // تابع بروزرسانی متن باکس مختصات
+    function updateCoordDisplay(latlng) {
+      const displayElement = document.getElementById('coord-text');
+      if (!displayElement || !latlng) return;
+
+      if (useDMS) {
+        displayElement.innerHTML = `${toDMS(latlng.lat, true)} | ${toDMS(latlng.lng, false)}`;
+      } else {
+        displayElement.innerHTML = `Lat: ${latlng.lat.toFixed(5)} | Lng: ${latlng.lng.toFixed(5)}`;
+      }
+    }
+
+    // ساخت کنترل (باکس گوشه پایین سمت راست)
+    const coordControl = L.control({ position: 'bottomright' });
+
+    coordControl.onAdd = function (map) {
+      const div = L.DomUtil.create('div', 'coord-box');
+      div.style.padding = '8px 12px';
+      div.style.background = 'rgba(255, 255, 255, 0.95)';
+      div.style.border = '2px solid #2B5B84';
+      div.style.borderRadius = '8px';
+      div.style.fontSize = '13px';
+      div.style.direction = 'ltr';
+      div.style.fontFamily = 'monospace';
+      div.style.display = 'flex';
+      div.style.alignItems = 'center';
+      div.style.gap = '10px';
+      div.style.boxShadow = '0 2px 6px rgba(0,0,0,0.3)';
+      div.style.zIndex = '1000';
+
+      div.innerHTML = `
+        <span id="copy-toast" style="display: none; color: #28a745; font-weight: bold; font-size: 11px;">Copied!</span>
+        <span id="coord-text" title="برای کپی کلیک کنید" style="cursor: pointer; user-select: none; font-weight: bold; color: #333;">Lat: -- | Lng: --</span>
+        <button id="toggle-coord-btn" title="تغییر فرمت نمایش" style="
+          cursor: pointer; padding: 3px 8px; font-size: 11px; font-weight: bold;
+          border: 1px solid #007bff; background: #007bff; color: white; border-radius: 4px;
+        ">DMS</button>
+      `;
+
+      L.DomEvent.disableClickPropagation(div);
+
+      setTimeout(() => {
+        const textEl = document.getElementById('coord-text');
+        const btnEl = document.getElementById('toggle-coord-btn');
+        const toastEl = document.getElementById('copy-toast');
+
+        if (textEl) {
+          textEl.addEventListener('click', () => {
+            const text = textEl.innerText;
+            if (!text || text.includes('--')) return;
+            navigator.clipboard.writeText(text).then(() => {
+              if (toastEl) {
+                toastEl.style.display = 'inline';
+                setTimeout(() => { toastEl.style.display = 'none'; }, 1500);
+              }
+            });
+          });
+        }
+
+        if (btnEl) {
+          btnEl.addEventListener('click', () => {
+            useDMS = !useDMS;
+            btnEl.innerText = useDMS ? 'DD' : 'DMS';
+            if (lastLatLng) updateCoordDisplay(lastLatLng);
+          });
+        }
+      }, 100);
+
+      return div;
+    };
+
+    coordControl.addTo(map);
+
+    // رویداد حرکت ماوس (آپدیت نمایش مختصات)
+    map.on('mousemove', function (e) {
+      lastLatLng = e.latlng;
+      updateCoordDisplay(e.latlng);
+    });
+
+    // رویداد کلیک روی نقشه (ایجاد/جابه‌جایی مارکر و نمایش پاپ‌آپ مختصات)
+    map.on('click', function (e) {
+      const latlng = e.latlng;
+      if (currentMarker) {
+        currentMarker.setLatLng(latlng);
+      } else {
+        currentMarker = L.marker(latlng).addTo(map);
+      }
+      const latDD = latlng.lat.toFixed(5);
+      const lngDD = latlng.lng.toFixed(5);
+      currentMarker.bindPopup('<div style="direction:ltr; text-align:center; font-family:monospace; font-size:12px; font-weight:bold; color:#1E3A8A;">Lat: ' + latDD + '<br>Lng: ' + lngDD + '</div>').openPopup();
+      lastLatLng = latlng;
+      updateCoordDisplay(latlng);
+    });
+
+    {% endmacro %}
+    """)
+    def __init__(self):
+        super().__init__()
+
 
 # تزریق استایل RTL و فونت‌های فارسی با محافظت از آیکون‌های Material Streamlit
 st.markdown("""
@@ -200,7 +332,6 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
             record_error(f"فایل NetCDF وجود ندارد: {nc_path}")
             return None
 
-        # تشخیص خودکار موتور پردازشی فایل توسط Xarray
         with xr.open_dataset(nc_path) as ds:
             var_key = "pfz_index" if "pfz_index" in ds else list(ds.data_vars.keys())[0]
             da = ds[var_key].load()
@@ -295,7 +426,6 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
             for d in extra_dims:
                 da = da.isel({d: 0})
 
-        # مرتب‌سازی صعودی مختصات
         da = da.sortby(lat_name, ascending=True).sortby(lon_name, ascending=True)
 
         lats = da[lat_name].values
@@ -306,7 +436,6 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
         if ny < 2 or nx < 2:
             return None, None
 
-        # محاسبه دقیق مرز پیکسل‌ها (Pixel Boundary Extent)
         dx = float(np.abs(lons[1] - lons[0])) / 2.0 if len(lons) > 1 else 0.025
         dy = float(np.abs(lats[1] - lats[0])) / 2.0 if len(lats) > 1 else 0.025
 
@@ -319,7 +448,6 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
         if not valid_mask.any():
             return None, None
 
-        # نرمال‌سازی داده برای اعمال Colormap
         vmin, vmax = float(np.nanmin(data_arr[valid_mask])), float(np.nanmax(data_arr[valid_mask]))
         norm_arr = np.zeros_like(data_arr)
         if vmax > vmin:
@@ -329,7 +457,6 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
         rgba_img = colormap(norm_arr)
         rgba_img[~valid_mask] = [0.0, 0.0, 0.0, 0.0]
 
-        # معکوس‌سازی عمودی جهت انطباق محور Y در PIL
         rgba_img = np.flipud(rgba_img)
 
         img_uint8 = (rgba_img * 255.0).clip(0, 255).astype(np.uint8)
@@ -495,15 +622,8 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         control=True
     ).add_to(m)
 
-    # 📍 افزودن ابزار نمایش لحظه‌ای مختصات کرسر (Mouse Position)
-    MousePosition(
-        position='topright',
-        separator=' , ',
-        empty_string='خارج از نقشه',
-        lng_first=False,
-        num_digits=4,
-        prefix='مختصات (عرض، طول): '
-    ).add_to(m)
+    # 📍 تزریق کنترل سفارشی مختصات (نمایش، تبدیل DMS/DD، کپی در Clipboard و افزودن مارکر با کلیک)
+    CustomMapFeatures().add_to(m)
     
     # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
     if st.session_state.nc_out_list:
@@ -562,21 +682,19 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                 except Exception as chl_ex:
                     record_error(f"خطا در ایجاد لایه Chlorophyll-a منطقه {reg_name}", chl_ex)
 
-    # ۲. رسم مرز مناطق
+    # ۲. رسم مرز مناطق (حذف Tooltip طبق درخواست)
     folium.GeoJson(
         st.session_state.combined_region_gdf,
         name="Region Boundaries",
-        style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'},
-        tooltip=folium.GeoJsonTooltip(fields=['Region'], aliases=['منطقه:'])
+        style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
     ).add_to(m)
     
-    # ۳. رسم خطوط جبهه‌ها
+    # ۳. رسم خطوط جبهه‌ها (حذف Tooltip طبق درخواست)
     if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
         folium.GeoJson(
             st.session_state.combined_fronts_gdf,
             name="PFZ Front Lines",
-            style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0},
-            tooltip=folium.GeoJsonTooltip(fields=['Region', 'Length_km', 'Threshold'], aliases=['منطقه:', 'طول (km):', 'آستانه:'])
+            style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0}
         ).add_to(m)
         st.success(f"🎯 تعداد {len(st.session_state.combined_fronts_gdf)} جبهه صیادی در مجموع مناطق استخراج و رسم شد.")
 
@@ -597,4 +715,4 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
 
     m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
     folium.LayerControl().add_to(m)
-    st_folium(m, width=1100, height=600)
+    st_folium(m, width=1100, height=600, returned_objects=[])
