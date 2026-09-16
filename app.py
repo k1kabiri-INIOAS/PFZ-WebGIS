@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, updated Matplotlib colormap API, accurate Jalali date conversion, and automatic xarray engine detection.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, updated Matplotlib colormap API, accurate Jalali date conversion, and multi-basemap support (Google Satellite, Hybrid, Esri, OSM).
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -347,7 +347,6 @@ def load_and_crop_dataset(nc_path, shp_path):
     if not nc_path or not os.path.exists(nc_path):
         return None
     try:
-        # حذف engine تا xarray بر اساس ساختار فایل، موتور مناسب را انتخاب کند
         with xr.open_dataset(nc_path) as ds:
             var_key = list(ds.data_vars.keys())[0]
             da = ds[var_key].load()
@@ -461,10 +460,39 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
     if greg_str and jalali_str:
         st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str}` | **Data Acquisition Date:** `{greg_str}`")
 
+    # ساخت نقشه پایه بدون کاشی پیش‌فرض جهت مدیریت پس‌زمینه‌ها
     m = folium.Map(
         location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
-        zoom_start=6, tiles="OpenStreetMap"
+        zoom_start=6, 
+        tiles=None
     )
+    
+    # 🌐 افزودن سرویس‌های نقشه پس‌زمینه (Basemaps)
+    folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)').add_to(m)
+    
+    folium.TileLayer(
+        tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        attr='Google Satellite',
+        name='تصاویر ماهواره‌ای گوگل (Satellite)',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    
+    folium.TileLayer(
+        tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+        attr='Google Hybrid',
+        name='نقشه ترکیبی گوگل (Hybrid)',
+        overlay=False,
+        control=True
+    ).add_to(m)
+
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri Topo',
+        name='توپوگرافی (Esri Topo)',
+        overlay=False,
+        control=True
+    ).add_to(m)
     
     # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
     if st.session_state.nc_out_list:
