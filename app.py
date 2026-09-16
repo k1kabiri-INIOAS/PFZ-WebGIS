@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, updated Matplotlib colormap API, accurate Jalali date conversion, and fixed xarray engines.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, updated Matplotlib colormap API, accurate Jalali date conversion, and automatic xarray engine detection.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -198,10 +198,10 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
             record_error(f"فایل NetCDF وجود ندارد: {nc_path}")
             return None
 
-        # 🟢 تعیین اجباری موتور پردازش برای جلوگیری از کرش
-        with xr.open_dataset(nc_path, engine="h5netcdf") as ds:
+        # تشخیص خودکار موتور پردازشی فایل توسط Xarray
+        with xr.open_dataset(nc_path) as ds:
             var_key = "pfz_index" if "pfz_index" in ds else list(ds.data_vars.keys())[0]
-            da = ds[var_key]
+            da = ds[var_key].load()
             
             lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
             lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
@@ -347,8 +347,8 @@ def load_and_crop_dataset(nc_path, shp_path):
     if not nc_path or not os.path.exists(nc_path):
         return None
     try:
-        # 🟢 تغییر ساختار برای اطمینان از باز شدن صحیح فایل و بارگیری آن در مموری
-        with xr.open_dataset(nc_path, engine="h5netcdf") as ds:
+        # حذف engine تا xarray بر اساس ساختار فایل، موتور مناسب را انتخاب کند
+        with xr.open_dataset(nc_path) as ds:
             var_key = list(ds.data_vars.keys())[0]
             da = ds[var_key].load()
         
@@ -473,8 +473,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             # (الف) لایه PFZ
             if nc_out and os.path.exists(nc_out):
                 try:
-                    # 🟢 افزودن engine="h5netcdf" به بخش نقشه
-                    with xr.open_dataset(nc_out, engine="h5netcdf") as ds_pfz:
+                    with xr.open_dataset(nc_out) as ds_pfz:
                         var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                         da_pfz = ds_pfz[var_key].load()
                         
