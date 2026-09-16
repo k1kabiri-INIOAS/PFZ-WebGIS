@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, updated Matplotlib colormap API, and accurate Jalali date conversion.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, updated Matplotlib colormap API, accurate Jalali date conversion, and fixed xarray engines.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -198,7 +198,8 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
             record_error(f"فایل NetCDF وجود ندارد: {nc_path}")
             return None
 
-        with xr.open_dataset(nc_path) as ds:
+        # 🟢 تعیین اجباری موتور پردازش برای جلوگیری از کرش
+        with xr.open_dataset(nc_path, engine="h5netcdf") as ds:
             var_key = "pfz_index" if "pfz_index" in ds else list(ds.data_vars.keys())[0]
             da = ds[var_key]
             
@@ -346,9 +347,10 @@ def load_and_crop_dataset(nc_path, shp_path):
     if not nc_path or not os.path.exists(nc_path):
         return None
     try:
-        ds = xr.open_dataset(nc_path)
-        var_key = list(ds.data_vars.keys())[0]
-        da = ds[var_key]
+        # 🟢 تغییر ساختار برای اطمینان از باز شدن صحیح فایل و بارگیری آن در مموری
+        with xr.open_dataset(nc_path, engine="h5netcdf") as ds:
+            var_key = list(ds.data_vars.keys())[0]
+            da = ds[var_key].load()
         
         gdf = gpd.read_file(shp_path)
         if gdf.crs is not None and gdf.crs != "EPSG:4326":
@@ -471,7 +473,8 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             # (الف) لایه PFZ
             if nc_out and os.path.exists(nc_out):
                 try:
-                    with xr.open_dataset(nc_out) as ds_pfz:
+                    # 🟢 افزودن engine="h5netcdf" به بخش نقشه
+                    with xr.open_dataset(nc_out, engine="h5netcdf") as ds_pfz:
                         var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                         da_pfz = ds_pfz[var_key].load()
                         
