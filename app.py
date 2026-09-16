@@ -28,45 +28,48 @@ plt.switch_backend('Agg')
 
 st.set_page_config(page_title="سامانه مدیریت PFZ", layout="wide")
 
-# تزریق استایل RTL و فونت‌های فارسی به Streamlit
+# تزریق استایل RTL و فونت‌های فارسی بدون آسیب به آیکون‌های Streamlit
 st.markdown("""
     <style>
     @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
     
-    html, body, [class*="css"], div, p, span, h1, h2, h3, h4, h5, h6, label, input, button {
-        font-family: 'Vazirmatn', 'B Titr', 'B Mitra', 'B Zar', 'Tahoma', sans-serif !important;
-        direction: rtl !important;
-        text-align: right !important;
+    /* تنظیم فونت و جهت کلی اپلیکیشن */
+    html, body, .stApp {
+        font-family: 'Vazirmatn', sans-serif;
+        direction: rtl;
+        text-align: right;
     }
     
-    .stApp {
-        direction: rtl !important;
-    }
-    
-    /* راست‌چین کردن منوی کناری (Sidebar) */
-    [data-testid="stSidebar"] {
-        direction: rtl !important;
-        text-align: right !important;
-    }
-    
-    [data-testid="stSidebar"] * {
-        direction: rtl !important;
-        text-align: right !important;
+    /* استثنا کردن آیکون‌های سیستم استریم‌لیت جهت جلوگیری از نمایش متنی آیکون‌ها */
+    [class*="material-symbols"], 
+    [class*="icon"], 
+    [data-testid="stHeader"] *,
+    [data-testid="stSidebarCollapseButton"] *,
+    button i,
+    .stIcon {
+        font-family: 'Material Symbols Outlined', 'Material Icons' !important;
+        direction: ltr !important;
+        display: inline-block !important;
     }
 
-    /* عنوان اصلی سامانه با فونت تیتر */
+    /* راست‌چین کردن متن‌های اصلی، عناوین و لیبل‌ها */
+    h1, h2, h3, h4, h5, h6, p, label, .stMarkdown, .stSelectbox, .stSlider {
+        font-family: 'Vazirmatn', sans-serif !important;
+        text-align: right;
+    }
+
+    /* اصلاح منوی کناری (Sidebar) */
+    [data-testid="stSidebar"] {
+        direction: rtl;
+        text-align: right;
+    }
+
+    /* عنوان اصلی برنامه */
     .main-title {
-        font-family: 'B Titr', 'Vazirmatn', sans-serif !important;
-        font-size: 2.2rem !important;
+        font-size: 2rem !important;
         color: #1E3A8A;
         font-weight: bold;
         margin-bottom: 1rem;
-        text-align: right !important;
-    }
-
-    /* اصلاح نمایش باکس‌های هشدار و گزارش */
-    .stAlert, .stMarkdown {
-        direction: rtl !important;
         text-align: right !important;
     }
     </style>
