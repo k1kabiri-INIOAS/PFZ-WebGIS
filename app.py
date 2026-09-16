@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, updated Matplotlib colormap API, accurate Jalali date conversion, and multi-basemap support (Google Satellite, Hybrid, Esri, OSM).
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, and live cursor coordinate tracking.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -19,6 +19,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 import folium
+from folium.plugins import MousePosition
 from shapely.geometry import LineString
 from streamlit_folium import st_folium
 import scipy.ndimage as ndimage
@@ -137,7 +138,8 @@ def log_process(msg_type, msg_text, status_obj=None):
     if status_obj:
         status_obj.write(msg_text)
 
-st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ)</div>', unsafe_allow_html=True)
+# عنوان اصلی برنامه همراه با آیکون موج و ماهی
+st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ) 🐟</div>', unsafe_allow_html=True)
 
 if st.session_state.error_logs:
     st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است:")
@@ -323,7 +325,6 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
         if vmax > vmin:
             norm_arr = (data_arr - vmin) / (vmax - vmin)
 
-        # اصلاح متد دریافت Colormap جهت سازگاری با نسخه‌های جدید Matplotlib
         colormap = plt.get_cmap(cmap_name)
         rgba_img = colormap(norm_arr)
         rgba_img[~valid_mask] = [0.0, 0.0, 0.0, 0.0]
@@ -460,7 +461,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
     if greg_str and jalali_str:
         st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str}` | **Data Acquisition Date:** `{greg_str}`")
 
-    # ساخت نقشه پایه بدون کاشی پیش‌فرض جهت مدیریت پس‌زمینه‌ها
+    # ساخت نقشه پایه بدون کاشی پیش‌فرض
     m = folium.Map(
         location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
         zoom_start=6, 
@@ -492,6 +493,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         name='توپوگرافی (Esri Topo)',
         overlay=False,
         control=True
+    ).add_to(m)
+
+    # 📍 افزودن ابزار نمایش لحظه‌ای مختصات کرسر (Mouse Position)
+    MousePosition(
+        position='topright',
+        separator=' , ',
+        empty_string='خارج از نقشه',
+        lng_first=False,
+        num_digits=4,
+        prefix='مختصات (عرض، طول): '
     ).add_to(m)
     
     # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
