@@ -2,6 +2,9 @@
 # Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, and updated Matplotlib colormap API.
 
 import os
+# غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
+
 import sys
 import tempfile
 import zipfile
@@ -28,40 +31,34 @@ plt.switch_backend('Agg')
 
 st.set_page_config(page_title="سامانه مدیریت PFZ", layout="wide")
 
-# تزریق استایل RTL و فونت‌های فارسی بدون آسیب به آیکون‌های Streamlit
+# تزریق استایل RTL و فونت‌های فارسی با محافظت از آیکون‌های Material Streamlit
 st.markdown("""
     <style>
+    /* ایمپورت فونت‌های فارسی و آیکون‌های متریال */
     @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
+    @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0');
     
-    /* تنظیم فونت و جهت کلی اپلیکیشن */
-    html, body, .stApp {
+    /* تنظیم راست‌چین شدن و فونت پایه برای بدنه */
+    .stApp, [data-testid="stSidebar"] {
+        direction: rtl;
+        text-align: right;
+    }
+
+    /* اعمال فونت فارسی فقط به عناصر متنی مشخص تا آیکون‌ها در امان بمانند */
+    p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input {
         font-family: 'Vazirmatn', sans-serif;
-        direction: rtl;
-        text-align: right;
     }
-    
-    /* استثنا کردن آیکون‌های سیستم استریم‌لیت جهت جلوگیری از نمایش متنی آیکون‌ها */
-    [class*="material-symbols"], 
-    [class*="icon"], 
-    [data-testid="stHeader"] *,
-    [data-testid="stSidebarCollapseButton"] *,
-    button i,
-    .stIcon {
-        font-family: 'Material Symbols Outlined', 'Material Icons' !important;
+
+    /* 🔴 محافظت قطعی از کلاس‌ها و تگ‌های سازنده آیکون در استریم‌لیت */
+    .material-symbols-rounded, 
+    .material-symbols-outlined, 
+    [data-testid="stIconMaterial"], 
+    i.material-icons,
+    .stIcon,
+    svg,
+    svg * {
+        font-family: 'Material Symbols Rounded', 'Material Icons', sans-serif !important;
         direction: ltr !important;
-        display: inline-block !important;
-    }
-
-    /* راست‌چین کردن متن‌های اصلی، عناوین و لیبل‌ها */
-    h1, h2, h3, h4, h5, h6, p, label, .stMarkdown, .stSelectbox, .stSlider {
-        font-family: 'Vazirmatn', sans-serif !important;
-        text-align: right;
-    }
-
-    /* اصلاح منوی کناری (Sidebar) */
-    [data-testid="stSidebar"] {
-        direction: rtl;
-        text-align: right;
     }
 
     /* عنوان اصلی برنامه */
@@ -71,6 +68,11 @@ st.markdown("""
         font-weight: bold;
         margin-bottom: 1rem;
         text-align: right !important;
+    }
+    
+    /* تراز کردن متن داخل سلکتورها و دراپ‌داون‌ها */
+    .stMarkdown, .stSelectbox, .stSlider {
+        text-align: right;
     }
     </style>
 """, unsafe_allow_html=True)
