@@ -550,4 +550,184 @@ st.markdown("""
     <style>
     /* ایمپورت فونت‌های فارسی و آیکون‌های متریال */
     @import url('[https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css](https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css)');
-    @import url('[https://fonts.googleapis.com/css2?family=Material](https://fonts.googleapis.com/css2?family=Material)
+    @import url('[https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0](https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0)');
+    
+    /* تنظیم راست‌چین شدن و فونت پایه برای بدنه */
+    .stApp, [data-testid="stSidebar"] {
+        direction: rtl;
+        text-align: right;
+    }
+
+    /* اعمال فونت فارسی فقط به عناصر متنی مشخص تا آیکون‌ها در امان بمانند */
+    p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input {
+        font-family: 'Vazirmatn', sans-serif;
+    }
+
+    /* 🔴 محافظت قطعی از کلاس‌ها و تگ‌های سازنده آیکون در استریم‌لیت */
+    .material-symbols-rounded, 
+    .material-symbols-outlined, 
+    [data-testid="stIconMaterial"], 
+    i.material-icons,
+    .stIcon,
+    svg,
+    svg * {
+        font-family: 'Material Symbols Rounded', 'Material Icons', sans-serif !important;
+        direction: ltr !important;
+    }
+
+    /* عنوان اصلی برنامه */
+    .main-title {
+        font-size: 2rem !important;
+        color: #1E3A8A;
+        font-weight: bold;
+        margin-bottom: 1rem;
+        text-align: right !important;
+    }
+    
+    /* تراز کردن متن داخل سلکتورها و دراپ‌داون‌ها */
+    .stMarkdown, .stSelectbox, .stSlider {
+        text-align: right;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+def gregorian_to_jalali(gy, gm, gd):
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    gy2 = (gy + 1) if gm > 2 else gy
+    days = 355666 + (365 * gy) + ((gy2 + 3) // 4) - ((gy2 + 99) // 100) + ((gy2 + 399) // 400) + gd + g_d_m[gm - 1]
+    jy = -1595 + (33 * (days // 12053))
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jm = 1 + (days // 31)
+        jd = 1 + (days % 31)
+    else:
+        jm = 7 + ((days - 186) // 30)
+        jd = 1 + ((days - 186) % 30)
+    return jy, jm, jd
+
+def to_persian_numerals(text):
+    """تبدیل اعداد انگلیسی به فارسی برای زیبایی بیشتر متن‌های نمایشی"""
+    persian_digits = {'0': '۰', '1': '۱', '2': '۲', '3': '۳', '4': '۴', '5': '۵', '6': '۶', '7': '۷', '8': '۸', '9': '۹'}
+    for eng, per in persian_digits.items():
+        text = text.replace(eng, per)
+    return text
+
+def parse_date_formats(date_str):
+    if not date_str:
+        return None, None
+    try:
+        dt = pd.to_datetime(date_str)
+        greg_str = dt.strftime("%Y-%m-%d")
+        jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
+        jalali_str = f"{jy}/{jm:02d}/{jd:02d}"
+        return greg_str, jalali_str
+    except Exception:
+        return str(date_str), None
+
+if "error_logs" not in st.session_state:
+    st.session_state.error_logs = []
+if "process_logs" not in st.session_state:
+    st.session_state.process_logs = []
+if "analysis_done" not in st.session_state:
+    st.session_state.analysis_done = False
+for key in ["nc_out_list", "sst_nc_path", "chl_nc_path", "combined_fronts_gdf", "combined_region_gdf", "minx", "miny", "maxx", "maxy", "latest_date"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
+
+def record_error(msg, exc=None):
+    full_msg = msg
+    if exc:
+        full_msg += f"\n{traceback.format_exc()}"
+    print(f"[PFZ-LOG-ERROR] {full_msg}", flush=True)
+    logging.error(full_msg)
+    st.session_state.error_logs.append(full_msg)
+
+def log_process(msg_type, msg_text, status_obj=None):
+    st.session_state.process_logs.append((msg_type, msg_text))
+    if status_obj:
+        status_obj.write(msg_text)
+
+# عنوان اصلی برنامه همراه با آیکون موج و ماهی
+st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ) 🐟</div>', unsafe_allow_html=True)
+
+if st.session_state.error_logs:
+    st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است:")
+    all_logs_str = "\n".join(st.session_state.error_logs)
+    st.code(all_logs_str, language="text")
+    if st.button("🗑️ پاک‌کردن تاریخچه خطاها"):
+        st.session_state.error_logs = []
+        st.rerun()
+
+st.sidebar.header("⚙️ تنظیمات پردازش و مدل")
+
+uploaded_shapefile_zip = st.sidebar.file_uploader(
+    "آپلود فایل فشرده شیپ‌فایل مناطق (.zip)", 
+    type="zip"
+)
+
+output_dir = os.path.join(tempfile.gettempdir(), "Data_Processed")
+os.makedirs(output_dir, exist_ok=True)
+
+region_configs = {}
+if uploaded_shapefile_zip is not None:
+    extract_path = os.path.join(output_dir, "extracted_shapes")
+    os.makedirs(extract_path, exist_ok=True)
+    
+    with zipfile.ZipFile(uploaded_shapefile_zip, 'r') as zip_ref:
+        zip_ref.extractall(extract_path)
+    
+    shp_files = []
+    for r, d, files in os.walk(extract_path):
+        for f in files:
+            if f.endswith('.shp') and not f.startswith('._'):
+                shp_files.append(os.path.join(r, f))
+    
+    if shp_files:
+        st.sidebar.subheader("📌 تنظیمات اختصاصی هر منطقه")
+        for shp_path in sorted(shp_files):
+            reg_name = os.path.splitext(os.path.basename(shp_path))[0].replace("_", " ").title()
+            
+            with st.sidebar.expander(f"منطقه: {reg_name}", expanded=True):
+                sst_w = st.slider(f"وزن SST ({reg_name})", 0.0, 1.0, 0.6, 0.05, key=f"sst_{reg_name}")
+                chl_w = round(1.0 - sst_w, 2)
+                st.caption(f"وزن کلروفیل-آ: **{chl_w}**")
+                
+                thresh = st.slider(f"آستانه حساسیت ({reg_name})", 0.1, 1.0, 0.50, 0.05, key=f"thresh_{reg_name}")
+                
+                region_configs[reg_name] = {
+                    "shp_path": shp_path,
+                    "sst_weight": sst_w,
+                    "chl_weight": chl_w,
+                    "threshold": thresh
+                }
+    else:
+        st.sidebar.error("هیچ فایل .shp معتبری در فایل ZIP یافت نشد.")
+
+def generate_fronts_fallback(nc_path, user_threshold, region_name):
+    try:
+        if not nc_path or not os.path.exists(nc_path):
+            record_error(f"فایل NetCDF وجود ندارد: {nc_path}")
+            return None
+
+        with xr.open_dataset(nc_path) as ds:
+            var_key = "pfz_index" if "pfz_index" in ds else list(ds.data_vars.keys())[0]
+            da = ds[var_key].load()
+            
+            lat_name =تغییرات مورد نظر شما با موفقیت روی فایل اعمال شد. این نسخه نهایی که از این پس با نام **app_2.py** به آن ارجاع می‌دهیم، شامل موارد زیر است:
+
+*   **اضافه شدن فرمت DDM:** اکنون در کنار فرمت‌های DD (اعشاری) و DMS (درجه-دقیقه-ثانیه)، فرمت DDM (درجه-دقیقه اعشاری) که برای قایق‌رانان پرکاربرد است نیز به برنامه اضافه شده و دکمه پایین نقشه بین این ۳ حالت جابه‌جا می‌شود.
+*   **قابلیت کپی تعاملی از روی نقطه (Popup):** با کلیک روی هر نقطه از نقشه، پاپ‌آپ باز شده و هر سه فرمت مختصات (DD, DDM, DMS) را نمایش می‌دهد. با کلیک روی هر کدام، مختصات در کلیپ‌بورد کپی شده و پیام تایید نمایش داده می‌شود.
+*   **اصلاح فونت و اعداد فارسی در تاریخ:** یک تابع مبدل برای تبدیل اعداد انگلیسی به اعداد فارسی (مثل ۲۴/۶/۱۴۰۵) اضافه شد. همچنین استایل باکس تاریخ در پایین سمت چپ به‌روز شد تا از فونت زیبای «وزیرمتن» برای بخش فارسی استفاده کند.
+
+کد کامل و به‌روزرسانی شده `app_2.py`:
