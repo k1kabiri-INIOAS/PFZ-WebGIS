@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display with guaranteed input-select copy features, and interactive map marker placement.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, and direct Google Maps navigation integration.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -41,7 +41,8 @@ class CustomMapFeatures(MacroElement):
     تزریق کدهای جاوااسکریپت به نقشه جهت:
     - نمایش لحظه‌ای مختصات
     - سوئیچ بین فرمت‌های DD و DDM (درجه و دقیقه اعشاری)
-    - کپی تضمینی و انتخاب خودکار متن مختصات در پاپ‌آپ
+    - کپی تضمینی متن مختصات در پاپ‌آپ
+    - دکمه اتصال مستقیم و مسیریابی در گوگل مپ (Google Maps Navigation)
     - ثبت مارکر تعاملی با کلیک روی نقشه
     """
     _template = Template("""
@@ -124,7 +125,7 @@ class CustomMapFeatures(MacroElement):
       updateCoordDisplay(e.latlng);
     });
 
-    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ با کادر متنی تعاملی جهت کپی آسان)
+    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ شامل کپی مختصات و دکمه مسیریابی گوگل مپ)
     map.on('click', function (e) {
       const latlng = e.latlng;
       if (currentMarker) {
@@ -137,13 +138,19 @@ class CustomMapFeatures(MacroElement):
       const lngDDM = toDDM(latlng.lng, false);
       const copyText = latDDM + '  |  ' + lngDDM;
       
+      // لینک مستقیم گوگل مپ برای مسیریابی (دایرکشن) به مختصات کلیک شده
+      const gmapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${latlng.lat},${latlng.lng}`;
+      
       const popupHtml = `
-        <div style="direction:ltr; text-align:center; font-family:monospace; font-size:13px; font-weight:bold; color:#1E3A8A; min-width:180px; padding: 2px;">
+        <div style="direction:ltr; text-align:center; font-family:monospace; font-size:13px; font-weight:bold; color:#1E3A8A; min-width:190px; padding: 2px;">
           <div style="margin-bottom:6px;">${latDDM}<br>${lngDDM}</div>
           <input type="text" id="coord-input-box" value="${copyText}" readonly style="width: 100%; text-align: center; font-family: monospace; font-size: 11px; padding: 4px; margin-bottom: 6px; border: 1px solid #007bff; border-radius: 4px; background: #f0f4f8; color: #333;" />
-          <button id="popup-copy-btn" style="cursor: pointer; padding: 5px 10px; font-size: 12px; border: none; background: #007bff; color: white; border-radius: 4px; width: 100%; font-weight:bold;">
-            انتخاب و کپی (Copy)
+          <button id="popup-copy-btn" style="cursor: pointer; padding: 5px 10px; font-size: 11px; border: none; background: #007bff; color: white; border-radius: 4px; width: 100%; font-weight:bold; margin-bottom: 6px;">
+            انتخاب و کپی مختصات (Copy)
           </button>
+          <a href="${gmapsUrl}" target="_blank" style="display: block; padding: 6px 10px; font-size: 11px; background: #28a745; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center;">
+            📍 مسیریابی در گوگل مپ (Directions)
+          </a>
         </div>
       `;
       
@@ -168,9 +175,9 @@ class CustomMapFeatures(MacroElement):
               var successful = document.execCommand('copy');
               if (successful) {
                 copyBtn.innerText = 'کپی شد! (Copied)';
-                copyBtn.style.background = '#28a745';
+                copyBtn.style.background = '#17a2b8';
                 setTimeout(() => {
-                  copyBtn.innerText = 'انتخاب و کپی (Copy)';
+                  copyBtn.innerText = 'انتخاب و کپی مختصات (Copy)';
                   copyBtn.style.background = '#007bff';
                 }, 2000);
               } else {
@@ -180,9 +187,9 @@ class CustomMapFeatures(MacroElement):
               if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(copyText).then(() => {
                   copyBtn.innerText = 'کپی شد! (Copied)';
-                  copyBtn.style.background = '#28a745';
+                  copyBtn.style.background = '#17a2b8';
                   setTimeout(() => {
-                    copyBtn.innerText = 'انتخاب و کپی (Copy)';
+                    copyBtn.innerText = 'انتخاب و کپی مختصات (Copy)';
                     copyBtn.style.background = '#007bff';
                   }, 2000);
                 }).catch(() => {
@@ -668,7 +675,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         control=True
     ).add_to(m)
 
-    # 📍 تزریق کنترل سفارشی مختصات همراه با پاپ‌آپ دارای کادر متنی ایمن
+    # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه مسیریابی گوگل مپ
     CustomMapFeatures().add_to(m)
     
     # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
