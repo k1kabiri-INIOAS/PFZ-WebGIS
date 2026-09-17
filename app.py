@@ -138,24 +138,31 @@ class CustomMapFeatures(MacroElement):
       const lngDDM = toDDM(latlng.lng, false);
       const copyText = latDDM + '  |  ' + lngDDM;
       
-      // لینک‌های دسترسی به سرویس‌ها و پروتکل‌های مختلف
-      const geoUrl = `geo:${latlng.lat},${latlng.lng}?q=${latlng.lat},${latlng.lng}(PFZ+Target)`;
-      const gmapsUrl = `https://www.google.com/maps/search/?api=1&query=${latlng.lat},${latlng.lng}`;
-      const openSeaMapUrl = `https://map.openseamap.org/?zoom=12&lat=${latlng.lat}&lon=${latlng.lng}`;
-      const navionicsUrl = `https://webapp.navionics.com/?lat=${latlng.lat}&lon=${latlng.lng}&zoom=12`;
-      const windyUrl = `https://www.windy.com/?${latlng.lat},${latlng.lng},11`;
+      const latFixed = latlng.lat.toFixed(5);
+      const lngFixed = latlng.lng.toFixed(5);
+
+      // لینک‌های دسترسی به سرویس‌ها و پروتکل‌های مختلف (اصلاح فرمت Navionics به Garmin Marine با هش مکانی)
+      const navionicsUrl = `https://maps.garmin.com/en-US/marine/#13/${latFixed}/${lngFixed}`;
+      const geoUrl = `geo:${latFixed},${lngFixed}?q=${latFixed},${lngFixed}(PFZ+Target)`;
+      const gmapsUrl = `https://www.google.com/maps/search/?api=1&query=${latFixed},${lngFixed}`;
+      const openSeaMapUrl = `https://map.openseamap.org/?zoom=13&lat=${latFixed}&lon=${lngFixed}`;
+      const windyUrl = `https://www.windy.com/?${latFixed},${lngFixed},11`;
       
       const popupHtml = `
-        <div style="direction:ltr; text-align:center; font-family:monospace; font-size:12px; font-weight:bold; color:#1E3A8A; min-width:225px; padding: 2px; max-height: 310px; overflow-y: auto;">
+        <div style="direction:ltr; text-align:center; font-family:monospace; font-size:12px; font-weight:bold; color:#1E3A8A; min-width:230px; padding: 2px;">
           <div style="margin-bottom:6px;">${latDDM}<br>${lngDDM}</div>
           <input type="text" id="coord-input-box" value="${copyText}" readonly style="width: 100%; text-align: center; font-family: monospace; font-size: 11px; padding: 4px; margin-bottom: 6px; border: 1px solid #007bff; border-radius: 4px; background: #f0f4f8; color: #333;" />
           
           <button id="popup-copy-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #007bff; color: white; border-radius: 4px; width: 100%; font-weight:bold; margin-bottom: 5px;">
-            انتخاب و کپی مختصات (Copy)
+            📋 کپی کُد مختصات (Copy)
           </button>
+
+          <a href="${navionicsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #002B49; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
+            ⚓ باز کردن در Navionics / Garmin Marine
+          </a>
           
-          <a href="${geoUrl}" style="display: block; padding: 5px 8px; font-size: 11px; background: #28a745; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
-            🎯 باز کردن در GPS / Garmin (App)
+          <a href="${geoUrl}" style="display: block; padding: 5px 8px; font-size: 11px; background: #28a745; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;" title="مخصوص گوشی و تبلت جهت انتقال مستقیم به برنامه‌های GPS">
+            📲 ارسال به Garmin App / GPS (موبایل)
           </a>
 
           <a href="${gmapsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #4285F4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
@@ -163,11 +170,7 @@ class CustomMapFeatures(MacroElement):
           </a>
 
           <a href="${openSeaMapUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #007791; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
-            ⚓ باز کردن در OpenSeaMap
-          </a>
-
-          <a href="${navionicsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #002B49; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
-            🗺️ باز کردن در Navionics
+            🌐 باز کردن در OpenSeaMap
           </a>
 
           <a href="${windyUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #1B65B4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center;">
@@ -199,7 +202,7 @@ class CustomMapFeatures(MacroElement):
                 copyBtn.innerText = 'کپی شد! (Copied)';
                 copyBtn.style.background = '#17a2b8';
                 setTimeout(() => {
-                  copyBtn.innerText = 'انتخاب و کپی مختصات (Copy)';
+                  copyBtn.innerText = '📋 کپی کُد مختصات (Copy)';
                   copyBtn.style.background = '#007bff';
                 }, 2000);
               } else {
@@ -211,7 +214,7 @@ class CustomMapFeatures(MacroElement):
                   copyBtn.innerText = 'کپی شد! (Copied)';
                   copyBtn.style.background = '#17a2b8';
                   setTimeout(() => {
-                    copyBtn.innerText = 'انتخاب و کپی مختصات (Copy)';
+                    copyBtn.innerText = '📋 کپی کُد مختصات (Copy)';
                     copyBtn.style.background = '#007bff';
                   }, 2000);
                 }).catch(() => {
