@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, and multi-platform navigation integration (GPS/Garmin, Google Maps, OpenSeaMap, Navionics, Windy).
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, multi-platform navigation integration (GPS/Garmin, Google Maps, OpenSeaMap, Navionics, Windy), and robust map render error tracking.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -180,7 +180,7 @@ class CustomMapFeatures(MacroElement):
       lastLatLng = latlng;
       updateCoordDisplay(latlng);
 
-      # اتصال رویداد کپی به عناصر داخل پاپ‌آپ
+      // اتصال رویداد کپی به عناصر داخل پاپ‌آپ
       setTimeout(() => {
         const copyBtn = document.getElementById('popup-copy-btn');
         const inputBox = document.getElementById('coord-input-box');
@@ -646,144 +646,154 @@ if st.session_state.process_logs:
             else:
                 st.info(text)
 
+# ==========================================
+# ۲. بخش نمایش نقشه تعاملی با مدیریت خطا
+# ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های نقشه حرارتی (Heatmap)")
     
-    greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
-    
-    if greg_str and jalali_str:
-        persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
-        jalali_str_fa = jalali_str.translate(persian_digits)
-        st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str_fa}` | **Data Acquisition Date:** `{greg_str}`")
-
-    # ساخت نقشه پایه بدون کاشی پیش‌فرض
-    m = folium.Map(
-        location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
-        zoom_start=6, 
-        tiles=None
-    )
-    
-    # 🌐 افزودن سرویس‌های نقشه پس‌زمینه (Basemaps)
-    folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)').add_to(m)
-    
-    folium.TileLayer(
-        tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
-        attr='Google Satellite',
-        name='تصاویر ماهواره‌ای گوگل (Satellite)',
-        overlay=False,
-        control=True
-    ).add_to(m)
-    
-    folium.TileLayer(
-        tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
-        attr='Google Hybrid',
-        name='نقشه ترکیبی گوگل (Hybrid)',
-        overlay=False,
-        control=True
-    ).add_to(m)
-
-    folium.TileLayer(
-        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
-        attr='Esri Topo',
-        name='توپوگرافی (Esri Topo)',
-        overlay=False,
-        control=True
-    ).add_to(m)
-
-    # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه‌های چندگانه باز کردن پلتفرم‌های ناوبری
-    CustomMapFeatures().add_to(m)
-    
-    # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
-    if st.session_state.nc_out_list:
-        for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
-            
-            # (الف) لایه PFZ
-            if nc_out and os.path.exists(nc_out):
-                try:
-                    with xr.open_dataset(nc_out) as ds_pfz:
-                        var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
-                        da_pfz = ds_pfz[var_key].load()
-                        
-                        img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ", reg_name, "jet", output_dir)
-                        if img_path and bounds:
-                            folium.raster_layers.ImageOverlay(
-                                image=img_path,
-                                bounds=bounds,
-                                opacity=0.65,
-                                name=f"PFZ ({reg_name})",
-                                show=True
-                            ).add_to(m)
-                except Exception as pfz_ex:
-                    record_error(f"خطا در ایجاد لایه PFZ منطقه {reg_name}", pfz_ex)
-
-            # (ب) لایه SST
-            if st.session_state.sst_nc_path:
-                try:
-                    da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
-                    if da_sst is not None:
-                        img_path_sst, bounds_sst = render_pixel_perfect_heatmap(da_sst, "SST", reg_name, "coolwarm", output_dir)
-                        if img_path_sst and bounds_sst:
-                            folium.raster_layers.ImageOverlay(
-                                image=img_path_sst,
-                                bounds=bounds_sst,
-                                opacity=0.65,
-                                name=f"SST ({reg_name})",
-                                show=False
-                            ).add_to(m)
-                except Exception as sst_ex:
-                    record_error(f"خطا در ایجاد لایه SST منطقه {reg_name}", sst_ex)
-
-            # (ج) لایه Chlorophyll-a
-            if st.session_state.chl_nc_path:
-                try:
-                    da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
-                    if da_chl is not None:
-                        img_path_chl, bounds_chl = render_pixel_perfect_heatmap(da_chl, "Chlorophyll-a", reg_name, "YlGn", output_dir)
-                        if img_path_chl and bounds_chl:
-                            folium.raster_layers.ImageOverlay(
-                                image=img_path_chl,
-                                bounds=bounds_chl,
-                                opacity=0.65,
-                                name=f"Chlorophyll-a ({reg_name})",
-                                show=False
-                            ).add_to(m)
-                except Exception as chl_ex:
-                    record_error(f"خطا در ایجاد لایه Chlorophyll-a منطقه {reg_name}", chl_ex)
-
-    # ۲. رسم مرز مناطق
-    folium.GeoJson(
-        st.session_state.combined_region_gdf,
-        name="Region Boundaries",
-        style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
-    ).add_to(m)
-    
-    # ۳. رسم خطوط جبهه‌ها
-    if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
-        folium.GeoJson(
-            st.session_state.combined_fronts_gdf,
-            name="PFZ Front Lines",
-            style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0}
-        ).add_to(m)
-        st.success(f"🎯 تعداد {len(st.session_state.combined_fronts_gdf)} جبهه صیادی در مجموع مناطق استخراج و رسم شد.")
-
-    # ۴. کادر شناور روی نقشه با تاریخ شمسی و میلادی
-    if greg_str and jalali_str:
-        persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
-        jalali_str_fa = jalali_str.translate(persian_digits)
+    try:
+        greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
         
-        date_box_html = f'''
-            <div style="position: fixed; 
-                        bottom: 25px; left: 20px; width: 250px; height: 50px; 
-                        z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
-                        border: 2px solid #2B5B84; border-radius: 6px; 
-                        padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
-                        direction: rtl; font-family: 'Vazirmatn', sans-serif;">
-                تاریخ اخذ داده: {jalali_str_fa}<br>
-                <span style="font-family: Arial, sans-serif; color: #333333; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
-            </div>
-        '''
-        m.get_root().html.add_child(folium.Element(date_box_html))
+        if greg_str and jalali_str:
+            persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
+            jalali_str_fa = jalali_str.translate(persian_digits)
+            st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str_fa}` | **Data Acquisition Date:** `{greg_str}`")
 
-    m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
-    folium.LayerControl().add_to(m)
-    st_folium(m, width=1100, height=600, returned_objects=[])
+        # ساخت نقشه پایه بدون کاشی پیش‌فرض
+        m = folium.Map(
+            location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
+            zoom_start=6, 
+            tiles=None
+        )
+        
+        # 🌐 افزودن سرویس‌های نقشه پس‌زمینه (Basemaps)
+        folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)').add_to(m)
+        
+        folium.TileLayer(
+            tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+            attr='Google Satellite',
+            name='تصاویر ماهواره‌ای گوگل (Satellite)',
+            overlay=False,
+            control=True
+        ).add_to(m)
+        
+        folium.TileLayer(
+            tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+            attr='Google Hybrid',
+            name='نقشه ترکیبی گوگل (Hybrid)',
+            overlay=False,
+            control=True
+        ).add_to(m)
+
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri Topo',
+            name='توپوگرافی (Esri Topo)',
+            overlay=False,
+            control=True
+        ).add_to(m)
+
+        # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه‌های ناوبری
+        CustomMapFeatures().add_to(m)
+        
+        # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
+        if st.session_state.nc_out_list:
+            for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
+                
+                # (الف) لایه PFZ
+                if nc_out and os.path.exists(nc_out):
+                    try:
+                        with xr.open_dataset(nc_out) as ds_pfz:
+                            var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
+                            da_pfz = ds_pfz[var_key].load()
+                            
+                            img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ", reg_name, "jet", output_dir)
+                            if img_path and bounds:
+                                folium.raster_layers.ImageOverlay(
+                                    image=img_path,
+                                    bounds=bounds,
+                                    opacity=0.65,
+                                    name=f"PFZ ({reg_name})",
+                                    show=True
+                                ).add_to(m)
+                    except Exception as pfz_ex:
+                        record_error(f"خطا در ایجاد لایه PFZ منطقه {reg_name}", pfz_ex)
+
+                # (ب) لایه SST
+                if st.session_state.sst_nc_path:
+                    try:
+                        da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
+                        if da_sst is not None:
+                            img_path_sst, bounds_sst = render_pixel_perfect_heatmap(da_sst, "SST", reg_name, "coolwarm", output_dir)
+                            if img_path_sst and bounds_sst:
+                                folium.raster_layers.ImageOverlay(
+                                    image=img_path_sst,
+                                    bounds=bounds_sst,
+                                    opacity=0.65,
+                                    name=f"SST ({reg_name})",
+                                    show=False
+                                ).add_to(m)
+                    except Exception as sst_ex:
+                        record_error(f"خطا در ایجاد لایه SST منطقه {reg_name}", sst_ex)
+
+                # (ج) لایه Chlorophyll-a
+                if st.session_state.chl_nc_path:
+                    try:
+                        da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
+                        if da_chl is not None:
+                            img_path_chl, bounds_chl = render_pixel_perfect_heatmap(da_chl, "Chlorophyll-a", reg_name, "YlGn", output_dir)
+                            if img_path_chl and bounds_chl:
+                                folium.raster_layers.ImageOverlay(
+                                    image=img_path_chl,
+                                    bounds=bounds_chl,
+                                    opacity=0.65,
+                                    name=f"Chlorophyll-a ({reg_name})",
+                                    show=False
+                                ).add_to(m)
+                    except Exception as chl_ex:
+                        record_error(f"خطا در ایجاد لایه Chlorophyll-a منطقه {reg_name}", chl_ex)
+
+        # ۲. رسم مرز مناطق
+        folium.GeoJson(
+            st.session_state.combined_region_gdf,
+            name="Region Boundaries",
+            style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
+        ).add_to(m)
+        
+        # ۳. رسم خطوط جبهه‌ها
+        if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
+            folium.GeoJson(
+                st.session_state.combined_fronts_gdf,
+                name="PFZ Front Lines",
+                style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0}
+            ).add_to(m)
+            st.success(f"🎯 تعداد {len(st.session_state.combined_fronts_gdf)} جبهه صیادی در مجموع مناطق استخراج و رسم شد.")
+
+        # ۴. کادر شناور روی نقشه با تاریخ شمسی و میلادی
+        if greg_str and jalali_str:
+            persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
+            jalali_str_fa = jalali_str.translate(persian_digits)
+            
+            date_box_html = f'''
+                <div style="position: fixed; 
+                            bottom: 25px; left: 20px; width: 250px; height: 50px; 
+                            z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
+                            border: 2px solid #2B5B84; border-radius: 6px; 
+                            padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
+                            direction: rtl; font-family: 'Vazirmatn', sans-serif;">
+                    تاریخ اخذ داده: {jalali_str_fa}<br>
+                    <span style="font-family: Arial, sans-serif; color: #333333; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
+                </div>
+            '''
+            m.get_root().html.add_child(folium.Element(date_box_html))
+
+        m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
+        folium.LayerControl().add_to(m)
+        
+        # نمایش نهایی نقشه
+        st_folium(m, width=1100, height=600, returned_objects=[])
+
+    except Exception as map_render_err:
+        st.error("⚠️ خطا در پردازش و رندر نقشه:")
+        st.exception(map_render_err)
