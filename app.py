@@ -42,7 +42,7 @@ class CustomMapFeatures(MacroElement):
     - نمایش لحظه‌ای مختصات
     - سوئیچ بین فرمت‌های DD و DDM (درجه و دقیقه اعشاری)
     - کپی تضمینی متن مختصات در پاپ‌آپ
-    - دکمه اتصال مستقیم و مسیریابی در گوگل مپ (Google Maps Navigation)
+    - دکمه اتصال مستقیم و باز کردن در گوگل مپ (Google Maps Navigation)
     - ثبت مارکر تعاملی با کلیک روی نقشه
     """
     _template = Template("""
@@ -125,7 +125,7 @@ class CustomMapFeatures(MacroElement):
       updateCoordDisplay(e.latlng);
     });
 
-    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ شامل کپی مختصات و دکمه مسیریابی گوگل مپ)
+    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ شامل کپی مختصات و دکمه باز کردن گوگل مپ)
     map.on('click', function (e) {
       const latlng = e.latlng;
       if (currentMarker) {
@@ -138,7 +138,7 @@ class CustomMapFeatures(MacroElement):
       const lngDDM = toDDM(latlng.lng, false);
       const copyText = latDDM + '  |  ' + lngDDM;
       
-      // لینک مستقیم گوگل مپ برای مسیریابی (دایرکشن) به مختصات کلیک شده
+      // لینک مستقیم گوگل مپ برای باز کردن (دایرکشن) به مختصات کلیک شده
       const gmapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${latlng.lat},${latlng.lng}`;
       
       const popupHtml = `
@@ -149,7 +149,7 @@ class CustomMapFeatures(MacroElement):
             انتخاب و کپی مختصات (Copy)
           </button>
           <a href="${gmapsUrl}" target="_blank" style="display: block; padding: 6px 10px; font-size: 11px; background: #28a745; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center;">
-            📍 مسیریابی در گوگل مپ (Directions)
+            📍 باز کردن در گوگل مپ (Directions)
           </a>
         </div>
       `;
@@ -675,7 +675,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         control=True
     ).add_to(m)
 
-    # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه مسیریابی گوگل مپ
+    # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه باز کردن گوگل مپ
     CustomMapFeatures().add_to(m)
     
     # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
