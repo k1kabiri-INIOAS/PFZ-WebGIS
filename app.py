@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, and direct Google Maps navigation integration.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, and multi-platform navigation integration (Google Maps, OpenSeaMap, Navionics, Windy).
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -42,7 +42,7 @@ class CustomMapFeatures(MacroElement):
     - نمایش لحظه‌ای مختصات
     - سوئیچ بین فرمت‌های DD و DDM (درجه و دقیقه اعشاری)
     - کپی تضمینی متن مختصات در پاپ‌آپ
-    - دکمه اتصال مستقیم و باز کردن در گوگل مپ (Google Maps Navigation)
+    - دکمه‌های اتصال مستقیم به سرویس‌های مختلف (Google Maps, OpenSeaMap, Navionics, Windy)
     - ثبت مارکر تعاملی با کلیک روی نقشه
     """
     _template = Template("""
@@ -125,7 +125,7 @@ class CustomMapFeatures(MacroElement):
       updateCoordDisplay(e.latlng);
     });
 
-    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ شامل کپی مختصات و دکمه باز کردن گوگل مپ)
+    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ شامل کپی مختصات و لینک‌های چندگانه)
     map.on('click', function (e) {
       const latlng = e.latlng;
       if (currentMarker) {
@@ -138,18 +138,35 @@ class CustomMapFeatures(MacroElement):
       const lngDDM = toDDM(latlng.lng, false);
       const copyText = latDDM + '  |  ' + lngDDM;
       
-      // لینک مستقیم گوگل مپ برای باز کردن (دایرکشن) به مختصات کلیک شده
-      const gmapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${latlng.lat},${latlng.lng}`;
+      // لینک‌های دسترسی به سرویس‌های آنلاین مختلف
+      const gmapsUrl = `https://www.google.com/maps/search/?api=1&query=${latlng.lat},${latlng.lng}`;
+      const openSeaMapUrl = `https://map.openseamap.org/?zoom=12&lat=${latlng.lat}&lon=${latlng.lng}`;
+      const navionicsUrl = `https://webapp.navionics.com/?lat=${latlng.lat}&lon=${latlng.lng}&zoom=12`;
+      const windyUrl = `https://www.windy.com/?${latlng.lat},${latlng.lng},11`;
       
       const popupHtml = `
-        <div style="direction:ltr; text-align:center; font-family:monospace; font-size:13px; font-weight:bold; color:#1E3A8A; min-width:190px; padding: 2px;">
+        <div style="direction:ltr; text-align:center; font-family:monospace; font-size:12px; font-weight:bold; color:#1E3A8A; min-width:215px; padding: 2px; max-height: 280px; overflow-y: auto;">
           <div style="margin-bottom:6px;">${latDDM}<br>${lngDDM}</div>
           <input type="text" id="coord-input-box" value="${copyText}" readonly style="width: 100%; text-align: center; font-family: monospace; font-size: 11px; padding: 4px; margin-bottom: 6px; border: 1px solid #007bff; border-radius: 4px; background: #f0f4f8; color: #333;" />
-          <button id="popup-copy-btn" style="cursor: pointer; padding: 5px 10px; font-size: 11px; border: none; background: #007bff; color: white; border-radius: 4px; width: 100%; font-weight:bold; margin-bottom: 6px;">
+          
+          <button id="popup-copy-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #007bff; color: white; border-radius: 4px; width: 100%; font-weight:bold; margin-bottom: 5px;">
             انتخاب و کپی مختصات (Copy)
           </button>
-          <a href="${gmapsUrl}" target="_blank" style="display: block; padding: 6px 10px; font-size: 11px; background: #28a745; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center;">
-            📍 باز کردن در گوگل مپ (Directions)
+          
+          <a href="${gmapsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #4285F4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
+            📍 باز کردن در گوگل مپ
+          </a>
+
+          <a href="${openSeaMapUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #007791; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
+            ⚓ باز کردن در OpenSeaMap
+          </a>
+
+          <a href="${navionicsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #002B49; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
+            🗺️ باز کردن در Navionics
+          </a>
+
+          <a href="${windyUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #1B65B4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center;">
+            🌊 باز کردن در Windy
           </a>
         </div>
       `;
@@ -675,7 +692,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         control=True
     ).add_to(m)
 
-    # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه باز کردن گوگل مپ
+    # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه‌های چندگانه باز کردن در پلتفرم‌های مختلف
     CustomMapFeatures().add_to(m)
     
     # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
