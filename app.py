@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display with robust copy/DDM features, and interactive map marker placement.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display with guaranteed input-select copy features, and interactive map marker placement.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -41,7 +41,7 @@ class CustomMapFeatures(MacroElement):
     تزریق کدهای جاوااسکریپت به نقشه جهت:
     - نمایش لحظه‌ای مختصات
     - سوئیچ بین فرمت‌های DD و DDM (درجه و دقیقه اعشاری)
-    - کپی امن و تضمینی در Clipboard داخل پاپ‌آپ کلیک نقشه
+    - کپی تضمینی و انتخاب خودکار متن مختصات در پاپ‌آپ
     - ثبت مارکر تعاملی با کلیک روی نقشه
     """
     _template = Template("""
@@ -60,51 +60,6 @@ class CustomMapFeatures(MacroElement):
       const decimalMinutes = ((absolute - degrees) * 60).toFixed(3);
       const direction = isLat ? (deg >= 0 ? 'N' : 'S') : (deg >= 0 ? 'E' : 'W');
       return `${degrees}° ${decimalMinutes}' ${direction}`;
-    }
-
-    // تابع کپی ایمن و سازگار با تمامی مرورگرها و پروتکل‌ها (HTTP/HTTPS)
-    window.copyCoordsToClipboard = function(text, btn) {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function() {
-          triggerSuccess(btn);
-        }).catch(function() {
-          fallbackCopyText(text, btn);
-        });
-      } else {
-        fallbackCopyText(text, btn);
-      }
-    };
-
-    function fallbackCopyText(text, btn) {
-      const textArea = document.createElement("textarea");
-      textArea.value = text;
-      textArea.style.position = "fixed";
-      textArea.style.top = "0";
-      textArea.style.left = "0";
-      textArea.style.opacity = "0";
-      document.body.appendChild(textArea);
-      textArea.focus();
-      textArea.select();
-      try {
-        var successful = document.execCommand('copy');
-        if (successful) {
-          triggerSuccess(btn);
-        } else {
-          alert('کپی انجام نشد. لطفاً به صورت دستی کپی کنید.');
-        }
-      } catch (err) {
-        alert('مرورگر اجازه کپی خودکار را نمی‌دهد.');
-      }
-      document.body.removeChild(textArea);
-    }
-
-    function triggerSuccess(btn) {
-      btn.innerText = 'Copied!';
-      btn.style.background = '#28a745';
-      setTimeout(function() {
-        btn.innerText = 'Copy';
-        btn.style.background = '#007bff';
-      }, 2000);
     }
 
     // تابع بروزرسانی متن باکس مختصات گوشه صفحه
@@ -169,7 +124,7 @@ class CustomMapFeatures(MacroElement):
       updateCoordDisplay(e.latlng);
     });
 
-    // رویداد کلیک روی نقشه (ایجاد/جابه‌جایی مارکر و نمایش پاپ‌آپ مختصات DDM همراه با دکمه کپی امن)
+    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ با کادر متنی تعاملی جهت کپی آسان)
     map.on('click', function (e) {
       const latlng = e.latlng;
       if (currentMarker) {
@@ -183,11 +138,11 @@ class CustomMapFeatures(MacroElement):
       const copyText = latDDM + '  |  ' + lngDDM;
       
       const popupHtml = `
-        <div style="direction:ltr; text-align:center; font-family:monospace; font-size:13px; font-weight:bold; color:#1E3A8A; min-width:160px; padding: 2px;">
-          <div style="margin-bottom:10px;">${latDDM}<br>${lngDDM}</div>
-          <button onclick="copyCoordsToClipboard('${copyText}', this)" 
-                  style="cursor: pointer; padding: 5px 10px; font-size: 12px; border: none; background: #007bff; color: white; border-radius: 4px; width: 100%; font-weight:bold;">
-            Copy
+        <div style="direction:ltr; text-align:center; font-family:monospace; font-size:13px; font-weight:bold; color:#1E3A8A; min-width:180px; padding: 2px;">
+          <div style="margin-bottom:6px;">${latDDM}<br>${lngDDM}</div>
+          <input type="text" id="coord-input-box" value="${copyText}" readonly style="width: 100%; text-align: center; font-family: monospace; font-size: 11px; padding: 4px; margin-bottom: 6px; border: 1px solid #007bff; border-radius: 4px; background: #f0f4f8; color: #333;" />
+          <button id="popup-copy-btn" style="cursor: pointer; padding: 5px 10px; font-size: 12px; border: none; background: #007bff; color: white; border-radius: 4px; width: 100%; font-weight:bold;">
+            انتخاب و کپی (Copy)
           </button>
         </div>
       `;
@@ -195,6 +150,56 @@ class CustomMapFeatures(MacroElement):
       currentMarker.bindPopup(popupHtml).openPopup();
       lastLatLng = latlng;
       updateCoordDisplay(latlng);
+
+      // اتصال رویدادها به عناصر داخل پاپ‌آپ پس از باز شدن
+      setTimeout(() => {
+        const copyBtn = document.getElementById('popup-copy-btn');
+        const inputBox = document.getElementById('coord-input-box');
+        
+        if (copyBtn && inputBox) {
+          L.DomEvent.disableClickPropagation(copyBtn);
+          L.DomEvent.disableClickPropagation(inputBox);
+
+          const doCopy = function() {
+            inputBox.select();
+            inputBox.setSelectionRange(0, 99999); // برای موبایل و تبلت
+            
+            try {
+              var successful = document.execCommand('copy');
+              if (successful) {
+                copyBtn.innerText = 'کپی شد! (Copied)';
+                copyBtn.style.background = '#28a745';
+                setTimeout(() => {
+                  copyBtn.innerText = 'انتخاب و کپی (Copy)';
+                  copyBtn.style.background = '#007bff';
+                }, 2000);
+              } else {
+                throw new Error("ExecCommand failed");
+              }
+            } catch (err) {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(copyText).then(() => {
+                  copyBtn.innerText = 'کپی شد! (Copied)';
+                  copyBtn.style.background = '#28a745';
+                  setTimeout(() => {
+                    copyBtn.innerText = 'انتخاب و کپی (Copy)';
+                    copyBtn.style.background = '#007bff';
+                  }, 2000);
+                }).catch(() => {
+                  copyBtn.innerText = 'متن انتخاب شد (Ctrl+C)';
+                });
+              } else {
+                copyBtn.innerText = 'متن انتخاب شد (Ctrl+C)';
+              }
+            }
+          };
+
+          copyBtn.addEventListener('click', doCopy);
+          inputBox.addEventListener('click', function() {
+            inputBox.select();
+          });
+        }
+      }, 150);
     });
 
     {% endmacro %}
@@ -663,7 +668,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         control=True
     ).add_to(m)
 
-    # 📍 تزریق کنترل سفارشی مختصات (نمایش، تبدیل DDM، و کپی امن در پاپ‌آپ)
+    # 📍 تزریق کنترل سفارشی مختصات همراه با پاپ‌آپ دارای کادر متنی ایمن
     CustomMapFeatures().add_to(m)
     
     # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
