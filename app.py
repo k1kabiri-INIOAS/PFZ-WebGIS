@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, and multi-platform navigation integration (Google Maps, OpenSeaMap, Navionics, Windy).
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, and multi-platform navigation integration (GPS/Garmin, Google Maps, OpenSeaMap, Navionics, Windy).
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -42,7 +42,7 @@ class CustomMapFeatures(MacroElement):
     - نمایش لحظه‌ای مختصات
     - سوئیچ بین فرمت‌های DD و DDM (درجه و دقیقه اعشاری)
     - کپی تضمینی متن مختصات در پاپ‌آپ
-    - دکمه‌های اتصال مستقیم به سرویس‌های مختلف (Google Maps, OpenSeaMap, Navionics, Windy)
+    - دکمه‌های اتصال مستقیم به سرویس‌های ناوبری (Garmin/GPS, Google Maps, OpenSeaMap, Navionics, Windy)
     - ثبت مارکر تعاملی با کلیک روی نقشه
     """
     _template = Template("""
@@ -138,14 +138,15 @@ class CustomMapFeatures(MacroElement):
       const lngDDM = toDDM(latlng.lng, false);
       const copyText = latDDM + '  |  ' + lngDDM;
       
-      // لینک‌های دسترسی به سرویس‌های آنلاین مختلف
+      // لینک‌های دسترسی به سرویس‌ها و پروتکل‌های مختلف
+      const geoUrl = `geo:${latlng.lat},${latlng.lng}?q=${latlng.lat},${latlng.lng}(PFZ+Target)`;
       const gmapsUrl = `https://www.google.com/maps/search/?api=1&query=${latlng.lat},${latlng.lng}`;
       const openSeaMapUrl = `https://map.openseamap.org/?zoom=12&lat=${latlng.lat}&lon=${latlng.lng}`;
       const navionicsUrl = `https://webapp.navionics.com/?lat=${latlng.lat}&lon=${latlng.lng}&zoom=12`;
       const windyUrl = `https://www.windy.com/?${latlng.lat},${latlng.lng},11`;
       
       const popupHtml = `
-        <div style="direction:ltr; text-align:center; font-family:monospace; font-size:12px; font-weight:bold; color:#1E3A8A; min-width:215px; padding: 2px; max-height: 280px; overflow-y: auto;">
+        <div style="direction:ltr; text-align:center; font-family:monospace; font-size:12px; font-weight:bold; color:#1E3A8A; min-width:225px; padding: 2px; max-height: 310px; overflow-y: auto;">
           <div style="margin-bottom:6px;">${latDDM}<br>${lngDDM}</div>
           <input type="text" id="coord-input-box" value="${copyText}" readonly style="width: 100%; text-align: center; font-family: monospace; font-size: 11px; padding: 4px; margin-bottom: 6px; border: 1px solid #007bff; border-radius: 4px; background: #f0f4f8; color: #333;" />
           
@@ -153,6 +154,10 @@ class CustomMapFeatures(MacroElement):
             انتخاب و کپی مختصات (Copy)
           </button>
           
+          <a href="${geoUrl}" style="display: block; padding: 5px 8px; font-size: 11px; background: #28a745; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
+            🎯 باز کردن در GPS / Garmin (App)
+          </a>
+
           <a href="${gmapsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #4285F4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
             📍 باز کردن در گوگل مپ
           </a>
@@ -175,7 +180,7 @@ class CustomMapFeatures(MacroElement):
       lastLatLng = latlng;
       updateCoordDisplay(latlng);
 
-      // اتصال رویدادها به عناصر داخل پاپ‌آپ پس از باز شدن
+      # اتصال رویداد کپی به عناصر داخل پاپ‌آپ
       setTimeout(() => {
         const copyBtn = document.getElementById('popup-copy-btn');
         const inputBox = document.getElementById('coord-input-box');
@@ -186,7 +191,7 @@ class CustomMapFeatures(MacroElement):
 
           const doCopy = function() {
             inputBox.select();
-            inputBox.setSelectionRange(0, 99999); // برای موبایل و تبلت
+            inputBox.setSelectionRange(0, 99999);
             
             try {
               var successful = document.execCommand('copy');
@@ -232,25 +237,21 @@ class CustomMapFeatures(MacroElement):
         super().__init__()
 
 
-# تزریق استایل RTL و فونت‌های فارسی با محافظت از آیکون‌های Material Streamlit
+# تزریق استایل RTL و فونت‌های فارسی
 st.markdown("""
     <style>
-    /* ایمپورت فونت‌های فارسی و آیکون‌های متریال */
     @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
     @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0');
     
-    /* تنظیم راست‌چین شدن و فونت پایه برای بدنه */
     .stApp, [data-testid="stSidebar"] {
         direction: rtl;
         text-align: right;
     }
 
-    /* اعمال فونت فارسی فقط به عناصر متنی مشخص تا آیکون‌ها در امان بمانند */
     p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input {
         font-family: 'Vazirmatn', sans-serif;
     }
 
-    /* 🔴 محافظت قطعی از کلاس‌ها و تگ‌های سازنده آیکون در استریم‌لیت */
     .material-symbols-rounded, 
     .material-symbols-outlined, 
     [data-testid="stIconMaterial"], 
@@ -262,7 +263,6 @@ st.markdown("""
         direction: ltr !important;
     }
 
-    /* عنوان اصلی برنامه */
     .main-title {
         font-size: 2rem !important;
         color: #1E3A8A;
@@ -271,7 +271,6 @@ st.markdown("""
         text-align: right !important;
     }
     
-    /* تراز کردن متن داخل سلکتورها و دراپ‌داون‌ها */
     .stMarkdown, .stSelectbox, .stSlider {
         text-align: right;
     }
@@ -338,7 +337,6 @@ def log_process(msg_type, msg_text, status_obj=None):
     if status_obj:
         status_obj.write(msg_text)
 
-# عنوان اصلی برنامه همراه با آیکون موج و ماهی
 st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ) 🐟</div>', unsafe_allow_html=True)
 
 if st.session_state.error_logs:
@@ -692,7 +690,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         control=True
     ).add_to(m)
 
-    # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه‌های چندگانه باز کردن در پلتفرم‌های مختلف
+    # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه‌های چندگانه باز کردن پلتفرم‌های ناوبری
     CustomMapFeatures().add_to(m)
     
     # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
