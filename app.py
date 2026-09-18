@@ -1,9 +1,9 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, multi-platform navigation integration (GPS/Garmin, Google Maps, OpenSeaMap, Navionics, Windy), and robust map render error tracking.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, multi-platform navigation integration (GPS/Garmin, Google Maps, OpenSeaMap, Navionics, Windy), robust map render error tracking, and default shapefile fallback.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
-os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
 
 import sys
 import tempfile
@@ -42,7 +42,7 @@ class CustomMapFeatures(MacroElement):
     - نمایش لحظه‌ای مختصات
     - سوئیچ بین فرمت‌های DD و DDM (درجه و دقیقه اعشاری)
     - کپی تضمینی متن مختصات در پاپ‌آپ
-    - دکمه‌های اتصال مستقیم به سرویس‌های ناوبری
+    - دکمه‌های اتصال مستقیم به سرویس‌های ناوبری (Garmin/GPS, Google Maps, OpenSeaMap, Navionics, Windy)
     - ثبت مارکر تعاملی با کلیک روی نقشه
     """
     _template = Template("""
@@ -54,6 +54,7 @@ class CustomMapFeatures(MacroElement):
     let lastLatLng = null;
     let currentMarker = null;
 
+    // تابع تبدیل فرمت اعشاری (DD) به درجه و دقیقه اعشاری (DDM)
     function toDDM(deg, isLat) {
       const absolute = Math.abs(deg);
       const degrees = Math.floor(absolute);
@@ -62,6 +63,7 @@ class CustomMapFeatures(MacroElement):
       return `${degrees}° ${decimalMinutes}' ${direction}`;
     }
 
+    // تابع بروزرسانی متن باکس مختصات گوشه صفحه
     function updateCoordDisplay(latlng) {
       const displayElement = document.getElementById('coord-text');
       if (!displayElement || !latlng) return;
@@ -73,6 +75,7 @@ class CustomMapFeatures(MacroElement):
       }
     }
 
+    // ساخت کنترل (باکس گوشه پایین سمت راست)
     const coordControl = L.control({ position: 'bottomright' });
 
     coordControl.onAdd = function (map) {
@@ -116,11 +119,13 @@ class CustomMapFeatures(MacroElement):
 
     coordControl.addTo(map);
 
+    // رویداد حرکت ماوس (آپدیت نمایش مختصات)
     map.on('mousemove', function (e) {
       lastLatLng = e.latlng;
       updateCoordDisplay(e.latlng);
     });
 
+    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ شامل کپی مختصات و لینک‌های چندگانه)
     map.on('click', function (e) {
       const latlng = e.latlng;
       if (currentMarker) {
@@ -136,6 +141,7 @@ class CustomMapFeatures(MacroElement):
       const latFixed = latlng.lat.toFixed(5);
       const lngFixed = latlng.lng.toFixed(5);
 
+      // لینک‌های دسترسی به سرویس‌ها و پروتکل‌های مختلف
       const navionicsUrl = `https://maps.garmin.com/en-US/marine/#13/${latFixed}/${lngFixed}`;
       const geoUrl = `geo:${latFixed},${lngFixed}?q=${latFixed},${lngFixed}(PFZ+Target)`;
       const gmapsUrl = `https://www.google.com/maps/search/?api=1&query=${latFixed},${lngFixed}`;
@@ -177,6 +183,7 @@ class CustomMapFeatures(MacroElement):
       lastLatLng = latlng;
       updateCoordDisplay(latlng);
 
+      // اتصال رویداد کپی به عناصر داخل پاپ‌آپ
       setTimeout(() => {
         const copyBtn = document.getElementById('popup-copy-btn');
         const inputBox = document.getElementById('coord-input-box');
@@ -345,48 +352,73 @@ if st.session_state.error_logs:
 
 st.sidebar.header("⚙️ تنظیمات پردازش و مدل")
 
+DEFAULT_SHAPES_PATH = "default_shapes.zip"  # مسیر فایل شیپ‌فایل‌های پیش‌فرض
+
 uploaded_shapefile_zip = st.sidebar.file_uploader(
-    "آپلود فایل فشرده شیپ‌فایل مناطق (.zip)", 
+    "آپلود فایل فشرده شیپ‌فایل مناطق (.zip) - اختیاری", 
     type="zip"
 )
 
 output_dir = os.path.join(tempfile.gettempdir(), "Data_Processed")
 os.makedirs(output_dir, exist_ok=True)
 
-region_configs = {}
+extract_path = os.path.join(output_dir, "extracted_shapes")
+os.makedirs(extract_path, exist_ok=True)
+
+# تعیین منبع فایل شیپ‌فایل (آپلودی یا پیش‌فرض)
+zip_to_extract = None
 if uploaded_shapefile_zip is not None:
-    extract_path = os.path.join(output_dir, "extracted_shapes")
-    os.makedirs(extract_path, exist_ok=True)
-    
-    with zipfile.ZipFile(uploaded_shapefile_zip, 'r') as zip_ref:
-        zip_ref.extractall(extract_path)
-    
-    shp_files = []
-    for r, d, files in os.walk(extract_path):
-        for f in files:
-            if f.endswith('.shp') and not f.startswith('._'):
-                shp_files.append(os.path.join(r, f))
-    
-    if shp_files:
-        st.sidebar.subheader("📌 تنظیمات اختصاصی هر منطقه")
-        for shp_path in sorted(shp_files):
-            reg_name = os.path.splitext(os.path.basename(shp_path))[0].replace("_", " ").title()
+    zip_to_extract = uploaded_shapefile_zip
+    st.sidebar.success("📂 فایل شیپ‌فایل جدید آپلود شد.")
+elif os.path.exists(DEFAULT_SHAPES_PATH):
+    zip_to_extract = DEFAULT_SHAPES_PATH
+    st.sidebar.info("ℹ️ استفاده از فایل پیش‌فرض مناطق (default_shapes.zip)")
+
+region_configs = {}
+if zip_to_extract is not None:
+    try:
+        with zipfile.ZipFile(zip_to_extract, 'r') as zip_ref:
+            zip_ref.extractall(extract_path)
+        
+        shp_files = []
+        for r, d, files in os.walk(extract_path):
+            for f in files:
+                if f.endswith('.shp') and not f.startswith('._'):
+                    shp_files.append(os.path.join(r, f))
+        
+        if shp_files:
+            st.sidebar.subheader("📌 تنظیمات اختصاصی هر منطقه")
             
-            with st.sidebar.expander(f"منطقه: {reg_name}", expanded=True):
-                sst_w = st.slider(f"وزن SST ({reg_name})", 0.0, 1.0, 0.6, 0.05, key=f"sst_{reg_name}")
-                chl_w = round(1.0 - sst_w, 2)
-                st.caption(f"وزن کلروفیل-آ: **{chl_w}**")
+            # در صورت نیاز می‌توانید مقادیر اختصاصی برای نام مناطق خاص در این دیکشنری وارد کنید
+            DEFAULT_REGION_DEFAULTS = {
+                # "Region Name": {"sst_w": 0.60, "thresh": 0.50}
+            }
+            
+            for shp_path in sorted(shp_files):
+                reg_name = os.path.splitext(os.path.basename(shp_path))[0].replace("_", " ").title()
                 
-                thresh = st.slider(f"آستانه حساسیت ({reg_name})", 0.1, 1.0, 0.50, 0.05, key=f"thresh_{reg_name}")
+                def_sst = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get("sst_w", 0.60)
+                def_thresh = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get("thresh", 0.50)
                 
-                region_configs[reg_name] = {
-                    "shp_path": shp_path,
-                    "sst_weight": sst_w,
-                    "chl_weight": chl_w,
-                    "threshold": thresh
-                }
-    else:
-        st.sidebar.error("هیچ فایل .shp معتبری در فایل ZIP یافت نشد.")
+                with st.sidebar.expander(f"منطقه: {reg_name}", expanded=True):
+                    sst_w = st.slider(f"وزن SST ({reg_name})", 0.0, 1.0, def_sst, 0.05, key=f"sst_{reg_name}")
+                    chl_w = round(1.0 - sst_w, 2)
+                    st.caption(f"وزن کلروفیل-آ: **{chl_w}**")
+                    
+                    thresh = st.slider(f"آستانه حساسیت ({reg_name})", 0.1, 1.0, def_thresh, 0.05, key=f"thresh_{reg_name}")
+                    
+                    region_configs[reg_name] = {
+                        "shp_path": shp_path,
+                        "sst_weight": sst_w,
+                        "chl_weight": chl_w,
+                        "threshold": thresh
+                    }
+        else:
+            st.sidebar.error("هیچ فایل .shp معتبری در فایل ZIP یافت نشد.")
+    except Exception as ex:
+        record_error("خطا در بازکردن یا استخراج شیپ‌فایل", ex)
+else:
+    st.sidebar.warning("⚠️ لطفاً فایل فشرده شیپ‌فایل (.zip) را آپلود کنید یا مطمئن شوید فایل `default_shapes.zip` در مسیر برنامه موجود است.")
 
 def generate_fronts_fallback(nc_path, user_threshold, region_name):
     try:
@@ -559,7 +591,7 @@ def load_and_crop_dataset(nc_path, shp_path):
 
 if st.sidebar.button("🚀 دریافت داده‌های به‌روز و اجرای تحلیل"):
     if not region_configs:
-        st.error("لطفاً فایل فشرده شیپ‌فایل مناطق (.zip) را آپلود کنید.")
+        st.error("لطفاً فایل فشرده شیپ‌فایل مناطق (.zip) را آپلود کنید یا مطمئن شوید فایل default_shapes.zip وجود دارد.")
     else:
         st.session_state.process_logs = []
         with st.status("🚀 شروع فرآیند پردازش داده‌های مکانی چندمنطقه‌ای...", expanded=True) as status:
@@ -649,13 +681,12 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های نقشه حرارتی (Heatmap)")
     
     try:
-        # نمایش تاریخ اخذ داده‌ها به وضوح در بالای رابط کاربری
         greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
         
         if greg_str and jalali_str:
             persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
             jalali_str_fa = jalali_str.translate(persian_digits)
-            st.info(f"📅 **تاریخ اخذ داده‌های ماهواره‌ای:** `{jalali_str_fa}` | **Data Acquisition Date:** `{greg_str}`")
+            st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str_fa}` | **Data Acquisition Date:** `{greg_str}`")
 
         # ساخت نقشه پایه بدون کاشی پیش‌فرض
         m = folium.Map(
@@ -705,15 +736,15 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
                             
-                        img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ", reg_name, "jet", output_dir)
-                        if img_path and bounds:
-                            folium.raster_layers.ImageOverlay(
-                                image=img_path,
-                                bounds=bounds,
-                                opacity=0.65,
-                                name=f"PFZ ({reg_name})",
-                                show=True
-                            ).add_to(m)
+                            img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ", reg_name, "jet", output_dir)
+                            if img_path and bounds:
+                                folium.raster_layers.ImageOverlay(
+                                    image=img_path,
+                                    bounds=bounds,
+                                    opacity=0.65,
+                                    name=f"PFZ ({reg_name})",
+                                    show=True
+                                ).add_to(m)
                     except Exception as pfz_ex:
                         record_error(f"خطا در ایجاد لایه PFZ منطقه {reg_name}", pfz_ex)
 
@@ -751,49 +782,46 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                     except Exception as chl_ex:
                         record_error(f"خطا در ایجاد لایه Chlorophyll-a منطقه {reg_name}", chl_ex)
 
-        # ۲. افزودن لایه خطوط جبهه مستعد صید (PFZ Fronts)
+        # ۲. رسم مرز مناطق
+        folium.GeoJson(
+            st.session_state.combined_region_gdf,
+            name="Region Boundaries",
+            style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
+        ).add_to(m)
+        
+        # ۳. رسم خطوط جبهه‌ها
         if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
-            try:
-                folium.GeoJson(
-                    st.session_state.combined_fronts_gdf,
-                    name="خطوط جبهه مستعد صید (PFZ Fronts)",
-                    style_function=lambda x: {
-                        'color': '#ff0000',
-                        'weight': 3,
-                        'opacity': 0.8
-                    },
-                    tooltip=folium.GeoJsonTooltip(
-                        fields=['Region', 'Length_km', 'Threshold'],
-                        aliases=['منطقه:', 'طول (کیلومتر):', 'آستانه حساسیت:'],
-                        localize=True
-                    )
-                ).add_to(m)
-            except Exception as e:
-                record_error("خطا در رسم خطوط جبهه", e)
+            folium.GeoJson(
+                st.session_state.combined_fronts_gdf,
+                name="PFZ Front Lines",
+                style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0}
+            ).add_to(m)
+            st.success(f"🎯 تعداد {len(st.session_state.combined_fronts_gdf)} جبهه صیادی در مجموع مناطق استخراج و رسم شد.")
 
-        # ۳. افزودن لایه محدوده مناطق
-        if st.session_state.combined_region_gdf is not None:
-            try:
-                folium.GeoJson(
-                    st.session_state.combined_region_gdf,
-                    name="محدوده مناطق (Regions)",
-                    style_function=lambda x: {
-                        'color': '#000000',
-                        'weight': 2,
-                        'fillOpacity': 0.0,
-                        'dashArray': '5, 5'
-                    },
-                    tooltip=folium.GeoJsonTooltip(fields=['Region'], aliases=['منطقه:'])
-                ).add_to(m)
-            except Exception as e:
-                record_error("خطا در رسم محدوده مناطق", e)
+        # ۴. کادر شناور روی نقشه با تاریخ شمسی و میلادی
+        if greg_str and jalali_str:
+            persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
+            jalali_str_fa = jalali_str.translate(persian_digits)
+            
+            date_box_html = f'''
+                <div style="position: fixed; 
+                            bottom: 25px; left: 20px; width: 250px; height: 50px; 
+                            z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
+                            border: 2px solid #2B5B84; border-radius: 6px; 
+                            padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
+                            direction: rtl; font-family: 'Vazirmatn', sans-serif;">
+                    تاریخ اخذ داده: {jalali_str_fa}<br>
+                    <span style="font-family: Arial, sans-serif; color: #333333; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
+                </div>
+            '''
+            m.get_root().html.add_child(folium.Element(date_box_html))
 
-        # ۴. افزودن کنترل لایه‌ها (Layer Control)
-        folium.LayerControl(collapsed=False).add_to(m)
+        m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
+        folium.LayerControl().add_to(m)
+        
+        # نمایش نهایی نقشه
+        st_folium(m, width=1100, height=600, returned_objects=[])
 
-        # ۵. نمایش نقشه در استریم‌لیت
-        st_folium(m, width="100%", height=700, returned_objects=[])
-
-    except Exception as map_ex:
-        record_error("خطا در تولید و نمایش نقشه", map_ex)
-        st.error("خطا در تولید نقشه. لطفاً لاگ‌ها را بررسی کنید.")
+    except Exception as map_render_err:
+        st.error("⚠️ خطا در پردازش و رندر نقشه:")
+        st.exception(map_render_err)
