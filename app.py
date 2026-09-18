@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, multi-platform navigation integration (GPS/Garmin, Google Maps, OpenSeaMap, Navionics, Windy), robust map render error tracking, and default shapefile fallback.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, dynamic app picker (Open With), robust map render error tracking, and default shapefile fallback.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -42,7 +42,8 @@ class CustomMapFeatures(MacroElement):
     - نمایش لحظه‌ای مختصات
     - سوئیچ بین فرمت‌های DD و DDM (درجه و دقیقه اعشاری)
     - کپی تضمینی متن مختصات در پاپ‌آپ
-    - دکمه‌های اتصال مستقیم به سرویس‌های ناوبری (Garmin/GPS, Google Maps, OpenSeaMap, Navionics, Windy)
+    - دکمه Open With (اشتراک‌گذاری بومی جهت انتخاب نرم‌افزار دلخواه کاربر)
+    - دسترسی مستقیم به گوگل مپ، OpenSeaMap و Windy
     - ثبت مارکر تعاملی با کلیک روی نقشه
     """
     _template = Template("""
@@ -125,7 +126,7 @@ class CustomMapFeatures(MacroElement):
       updateCoordDisplay(e.latlng);
     });
 
-    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ شامل کپی مختصات و لینک‌های چندگانه)
+    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ شامل کپی مختصات و گزینه‌های ناوبری)
     map.on('click', function (e) {
       const latlng = e.latlng;
       if (currentMarker) {
@@ -141,9 +142,6 @@ class CustomMapFeatures(MacroElement):
       const latFixed = latlng.lat.toFixed(5);
       const lngFixed = latlng.lng.toFixed(5);
 
-      // لینک‌های دسترسی به سرویس‌ها و پروتکل‌های مختلف
-      const navionicsUrl = `https://maps.garmin.com/en-US/marine/#13/${latFixed}/${lngFixed}`;
-      const geoUrl = `geo:${latFixed},${lngFixed}?q=${latFixed},${lngFixed}(PFZ+Target)`;
       const gmapsUrl = `https://www.google.com/maps/search/?api=1&query=${latFixed},${lngFixed}`;
       const openSeaMapUrl = `https://map.openseamap.org/?zoom=13&lat=${latFixed}&lon=${lngFixed}`;
       const windyUrl = `https://www.windy.com/?${latFixed},${lngFixed},11`;
@@ -157,13 +155,9 @@ class CustomMapFeatures(MacroElement):
             📋 کپی کُد مختصات (Copy)
           </button>
 
-          <a href="${navionicsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #002B49; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
-            ⚓ باز کردن در Navionics / Garmin Marine
-          </a>
-          
-          <a href="${geoUrl}" style="display: block; padding: 5px 8px; font-size: 11px; background: #28a745; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;" title="مخصوص گوشی و تبلت جهت انتقال مستقیم به برنامه‌های GPS">
-            📲 ارسال به Garmin App / GPS (موبایل)
-          </a>
+          <button id="popup-share-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #6c757d; color: white; border-radius: 4px; font-weight: bold; text-align: center; width: 100%; margin-bottom: 5px;" title="انتخاب نرم‌افزار دلخواه جهت باز کردن مختصات">
+            🔀 انتخاب نرم‌افزار (Open With)
+          </button>
 
           <a href="${gmapsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #4285F4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
             📍 باز کردن در گوگل مپ
@@ -183,9 +177,10 @@ class CustomMapFeatures(MacroElement):
       lastLatLng = latlng;
       updateCoordDisplay(latlng);
 
-      // اتصال رویداد کپی به عناصر داخل پاپ‌آپ
+      # اتصال رویدادها به عناصر داخل پاپ‌آپ
       setTimeout(() => {
         const copyBtn = document.getElementById('popup-copy-btn');
+        const shareBtn = document.getElementById('popup-share-btn');
         const inputBox = document.getElementById('coord-input-box');
         
         if (copyBtn && inputBox) {
@@ -229,6 +224,21 @@ class CustomMapFeatures(MacroElement):
           copyBtn.addEventListener('click', doCopy);
           inputBox.addEventListener('click', function() {
             inputBox.select();
+          });
+        }
+
+        if (shareBtn) {
+          L.DomEvent.disableClickPropagation(shareBtn);
+          shareBtn.addEventListener('click', () => {
+            if (navigator.share) {
+              navigator.share({
+                title: 'مختصات نقطه صیادی PFZ',
+                text: copyText,
+                url: gmapsUrl
+              }).catch(() => {});
+            } else {
+              window.open(gmapsUrl, '_blank');
+            }
           });
         }
       }, 150);
@@ -389,15 +399,15 @@ if zip_to_extract is not None:
         if shp_files:
             st.sidebar.subheader("📌 تنظیمات اختصاصی هر منطقه")
             
-            # مقادیر پیش‌فرض خواسته‌شده: وزن SST برابر 0.6، کلروفیل 0.4 و آستانه 0.50
+            # تنظیم مقادیر پیش‌فرض اختصاصی برای Persian Gulf (وزن SST: 0.7، آستانه حساسیت: 0.4)
             DEFAULT_REGION_DEFAULTS = {
-                # اگر برای منطقه‌ای نام خاصی مد نظر بود می‌توانید تنظیم کنید:
-                # "Region Name": {"sst_w": 0.60, "thresh": 0.50}
+                "Persian Gulf": {"sst_w": 0.70, "thresh": 0.40}
             }
             
             for shp_path in sorted(shp_files):
                 reg_name = os.path.splitext(os.path.basename(shp_path))[0].replace("_", " ").title()
                 
+                # اعمال مقادیر پیش‌فرض در صورت تطابق با نام منطقه
                 def_sst = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get("sst_w", 0.60)
                 def_thresh = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get("thresh", 0.50)
                 
