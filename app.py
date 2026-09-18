@@ -11,6 +11,7 @@ import zipfile
 import traceback
 import logging
 import warnings
+import base64
 import pandas as pd
 import streamlit as st
 import geopandas as gpd
@@ -34,7 +35,18 @@ plt.switch_backend('Agg')
 st.set_page_config(page_title="سامانه مدیریت PFZ 🐟", page_icon="🐟", layout="wide")
 
 # ==========================================
-# ۱. کلاس ساخت کنترل سفارشی روی نقشه (JavaScript اختصاصی)
+# ۱. تابع تبدیل تصویر به Base64 جهت نمایش صحیح در نقشه (رفع مشکل لوکال پث)
+# ==========================================
+def image_to_base64(path):
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        return "data:image/png;base64," + base64.b64encode(data).decode("utf-8")
+    except Exception:
+        return None
+
+# ==========================================
+# ۲. کلاس ساخت کنترل سفارشی روی نقشه (JavaScript اختصاصی)
 # ==========================================
 class CustomMapFeatures(MacroElement):
     """
@@ -177,7 +189,6 @@ class CustomMapFeatures(MacroElement):
       lastLatLng = latlng;
       updateCoordDisplay(latlng);
 
-      # اتصال رویدادها به عناصر داخل پاپ‌آپ
       setTimeout(() => {
         const copyBtn = document.getElementById('popup-copy-btn');
         const shareBtn = document.getElementById('popup-share-btn');
@@ -362,7 +373,7 @@ if st.session_state.error_logs:
 
 st.sidebar.header("⚙️ تنظیمات پردازش و مدل")
 
-DEFAULT_SHAPES_PATH = "default_shapes.zip"  # مسیر فایل شیپ‌فایل‌های پیش‌فرض
+DEFAULT_SHAPES_PATH = "default_shapes.zip"
 
 uploaded_shapefile_zip = st.sidebar.file_uploader(
     "آپلود فایل فشرده شیپ‌فایل مناطق (.zip) - اختیاری", 
@@ -375,7 +386,6 @@ os.makedirs(output_dir, exist_ok=True)
 extract_path = os.path.join(output_dir, "extracted_shapes")
 os.makedirs(extract_path, exist_ok=True)
 
-# تعیین منبع فایل شیپ‌فایل (آپلودی یا پیش‌فرض)
 zip_to_extract = None
 if uploaded_shapefile_zip is not None:
     zip_to_extract = uploaded_shapefile_zip
@@ -399,7 +409,6 @@ if zip_to_extract is not None:
         if shp_files:
             st.sidebar.subheader("📌 تنظیمات اختصاصی هر منطقه")
             
-            # تنظیم مقادیر پیش‌فرض اختصاصی برای Persian Gulf (وزن SST: 0.7، آستانه حساسیت: 0.4)
             DEFAULT_REGION_DEFAULTS = {
                 "Persian Gulf": {"sst_w": 0.70, "thresh": 0.40}
             }
@@ -407,7 +416,6 @@ if zip_to_extract is not None:
             for shp_path in sorted(shp_files):
                 reg_name = os.path.splitext(os.path.basename(shp_path))[0].replace("_", " ").title()
                 
-                # اعمال مقادیر پیش‌فرض در صورت تطابق با نام منطقه
                 def_sst = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get("sst_w", 0.60)
                 def_thresh = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get("thresh", 0.50)
                 
@@ -686,7 +694,7 @@ if st.session_state.process_logs:
                 st.info(text)
 
 # ==========================================
-# ۲. بخش نمایش نقشه تعاملی با مدیریت خطا
+# ۳. بخش نمایش نقشه تعاملی با مدیریت خطا و بیس64
 # ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های نقشه حرارتی (Heatmap)")
@@ -736,7 +744,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه‌های ناوبری
         CustomMapFeatures().add_to(m)
         
-        # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a
+        # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a با تبدیل Base64
         if st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
                 
@@ -748,14 +756,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             da_pfz = ds_pfz[var_key].load()
                             
                             img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ", reg_name, "jet", output_dir)
-                            if img_path and bounds:
-                                folium.raster_layers.ImageOverlay(
-                                    image=img_path,
-                                    bounds=bounds,
-                                    opacity=0.65,
-                                    name=f"PFZ ({reg_name})",
-                                    show=True
-                                ).add_to(m)
+                            if img_path and bounds and os.path.exists(img_path):
+                                encoded_img = image_to_base64(img_path)
+                                if encoded_img:
+                                    folium.raster_layers.ImageOverlay(
+                                        image=encoded_img,
+                                        bounds=bounds,
+                                        opacity=0.65,
+                                        name=f"PFZ ({reg_name})",
+                                        show=True
+                                    ).add_to(m)
                     except Exception as pfz_ex:
                         record_error(f"خطا در ایجاد لایه PFZ منطقه {reg_name}", pfz_ex)
 
@@ -765,14 +775,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                         da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
                         if da_sst is not None:
                             img_path_sst, bounds_sst = render_pixel_perfect_heatmap(da_sst, "SST", reg_name, "coolwarm", output_dir)
-                            if img_path_sst and bounds_sst:
-                                folium.raster_layers.ImageOverlay(
-                                    image=img_path_sst,
-                                    bounds=bounds_sst,
-                                    opacity=0.65,
-                                    name=f"SST ({reg_name})",
-                                    show=False
-                                ).add_to(m)
+                            if img_path_sst and bounds_sst and os.path.exists(img_path_sst):
+                                encoded_img_sst = image_to_base64(img_path_sst)
+                                if encoded_img_sst:
+                                    folium.raster_layers.ImageOverlay(
+                                        image=encoded_img_sst,
+                                        bounds=bounds_sst,
+                                        opacity=0.65,
+                                        name=f"SST ({reg_name})",
+                                        show=False
+                                    ).add_to(m)
                     except Exception as sst_ex:
                         record_error(f"خطا در ایجاد لایه SST منطقه {reg_name}", sst_ex)
 
@@ -782,14 +794,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                         da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
                         if da_chl is not None:
                             img_path_chl, bounds_chl = render_pixel_perfect_heatmap(da_chl, "Chlorophyll-a", reg_name, "YlGn", output_dir)
-                            if img_path_chl and bounds_chl:
-                                folium.raster_layers.ImageOverlay(
-                                    image=img_path_chl,
-                                    bounds=bounds_chl,
-                                    opacity=0.65,
-                                    name=f"Chlorophyll-a ({reg_name})",
-                                    show=False
-                                ).add_to(m)
+                            if img_path_chl and bounds_chl and os.path.exists(img_path_chl):
+                                encoded_img_chl = image_to_base64(img_path_chl)
+                                if encoded_img_chl:
+                                    folium.raster_layers.ImageOverlay(
+                                        image=encoded_img_chl,
+                                        bounds=bounds_chl,
+                                        opacity=0.65,
+                                        name=f"Chlorophyll-a ({reg_name})",
+                                        show=False
+                                    ).add_to(m)
                     except Exception as chl_ex:
                         record_error(f"خطا در ایجاد لایه Chlorophyll-a منطقه {reg_name}", chl_ex)
 
@@ -831,7 +845,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         folium.LayerControl().add_to(m)
         
         # نمایش نهایی نقشه
-        st_folium(m, width=1100, height=600, returned_objects=[])
+        st_folium(m, width=1100, height=600)
 
     except Exception as map_render_err:
         st.error("⚠️ خطا در پردازش و رندر نقشه:")
