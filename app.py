@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with Google Auth, Admin Login Security, User Activity Logging, Map Date Display, and Layer Controls.
+# Description: Streamlit WebGIS application with Google Auth, Admin Login Security, User Activity Logging, Floating Date Box, and Layer Access Control.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -7,7 +7,6 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 import sys
 import tempfile
 import zipfile
-import traceback
 import logging
 import warnings
 import base64
@@ -54,7 +53,6 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, oauth_provider TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS user_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, action TEXT, timestamp TEXT)''')
     
-    # ساخت کاربر ادمین پیش‌فرض
     c.execute("SELECT * FROM users WHERE username='k1_kabiri'")
     if not c.fetchone():
         hashed_pw = hashlib.sha256('Keivan@010976'.encode()).hexdigest()
@@ -650,21 +648,10 @@ if st.session_state.role == 'admin':
                 st.success(text) if msg_type == "success" else st.error(text) if msg_type == "error" else st.info(text)
 
 # ==========================================
-# ۳. رندر نقشه تعاملی و نمایش تاریخ اخذ داده
+# ۳. رندر نقشه تعاملی و لایه‌بندی‌ها بر اساس نقش کاربر
 # ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
-    st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های حرارتی (Heatmaps)")
-    
-    # نمایش تاریخ اخذ داده به شمسی و میلادی در بالای نقشه
-    greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
-    if greg_str and jalali_str:
-        jalali_str_fa = jalali_str.translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))
-        st.markdown(f"""
-            <div style="background: #eef2f7; padding: 10px 15px; border-radius: 8px; border-left: 5px solid #1E3A8A; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; direction: ltr;">
-                <span style="font-family: monospace; font-weight: bold; color: #1E3A8A; font-size: 14px;">Acquisition Date (Gregorian): {greg_str}</span>
-                <span style="font-family: 'Vazirmatn', sans-serif; font-weight: bold; color: #1E3A8A; font-size: 14px;">تاریخ اخذ داده (شمسی): {jalali_str_fa}</span>
-            </div>
-        """, unsafe_allow_html=True)
+    st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های پایه")
 
     try:
         m = folium.Map(
@@ -673,16 +660,27 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             tiles=None
         )
         
-        folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)').add_to(m)
-        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='تصاویر ماهواره‌ای گوگل (Satellite)', overlay=False, control=True).add_to(m)
-        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google Hybrid', name='نقشه ترکیبی گوگل (Hybrid)', overlay=False, control=True).add_to(m)
-        folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attr='Esri Topo', name='توپوگرافی (Esri Topo)', overlay=False, control=True).add_to(m)
+        # نقشه‌های پایه (برای همه کاربران)
+        folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)', show=True).add_to(m)
+        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='تصاویر ماهواره‌ای گوگل (Satellite)', overlay=False, control=True, show=False).add_to(m)
+        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google Hybrid', name='نقشه ترکیبی گوگل (Hybrid)', overlay=False, control=True, show=False).add_to(m)
+        folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attr='Esri Topo', name='توپوگرافی (Esri Topo)', overlay=False, control=True, show=False).add_to(m)
 
         CustomMapFeatures().add_to(m)
         
-        if st.session_state.nc_out_list:
+        # لایه خطوط جبهه صیادی (برای همه کاربران - فعال به طور پیش‌فرض)
+        if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
+            fronts_fg = folium.FeatureGroup(name="خطوط جبهه صیادی (Fronts)", show=True)
+            folium.GeoJson(
+                st.session_state.combined_fronts_gdf,
+                style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0}
+            ).add_to(fronts_fg)
+            fronts_fg.add_to(m)
+
+        # لایه‌های تحلیلی اختصاصی مدیر سیستم (فقط ادمین می‌بیند و به طور پیش‌فرض خاموش هستند)
+        if st.session_state.role == 'admin' and st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
-                # PFZ Layer
+                # PFZ Layer (show=False)
                 if nc_out and os.path.exists(nc_out):
                     try:
                         with xr.open_dataset(nc_out) as ds_pfz:
@@ -692,10 +690,10 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path and bounds and os.path.exists(img_path):
                                 encoded_img = image_to_base64(img_path)
                                 if encoded_img:
-                                    folium.raster_layers.ImageOverlay(image=encoded_img, bounds=bounds, opacity=0.65, name=f"PFZ Index ({reg_name})", show=True).add_to(m)
+                                    folium.raster_layers.ImageOverlay(image=encoded_img, bounds=bounds, opacity=0.65, name=f"PFZ Index ({reg_name})", show=False).add_to(m)
                     except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
 
-                # SST Layer (دما) - قابل مشاهده و روشن/خاموش کردن توسط ادمین و کاربران
+                # SST Layer (show=False)
                 if st.session_state.sst_nc_path:
                     try:
                         da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
@@ -704,10 +702,10 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path_sst and bounds_sst and os.path.exists(img_path_sst):
                                 encoded_img_sst = image_to_base64(img_path_sst)
                                 if encoded_img_sst:
-                                    folium.raster_layers.ImageOverlay(image=encoded_img_sst, bounds=bounds_sst, opacity=0.65, name=f"SST - دمای سطح دریا ({reg_name})", show=True).add_to(m)
+                                    folium.raster_layers.ImageOverlay(image=encoded_img_sst, bounds=bounds_sst, opacity=0.65, name=f"SST - دمای سطح دریا ({reg_name})", show=False).add_to(m)
                     except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
 
-                # Chlorophyll-a Layer (کلروفیل) - قابل مشاهده و روشن/خاموش کردن توسط ادمین و کاربران
+                # Chlorophyll-a Layer (show=False)
                 if st.session_state.chl_nc_path:
                     try:
                         da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
@@ -716,23 +714,35 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path_chl and bounds_chl and os.path.exists(img_path_chl):
                                 encoded_img_chl = image_to_base64(img_path_chl)
                                 if encoded_img_chl:
-                                    folium.raster_layers.ImageOverlay(image=encoded_img_chl, bounds=bounds_chl, opacity=0.65, name=f"Chlorophyll-a ({reg_name})", show=True).add_to(m)
+                                    folium.raster_layers.ImageOverlay(image=encoded_img_chl, bounds=bounds_chl, opacity=0.65, name=f"Chlorophyll-a ({reg_name})", show=False).add_to(m)
                     except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
 
-        # رسم مرز مناطق
-        folium.GeoJson(
-            st.session_state.combined_region_gdf,
-            name="محدوده مناطق (Regions)",
-            style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
-        ).add_to(m)
-        
-        # رسم خطوط جبهه‌ها
-        if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
+            # رسم محدوده مناطق برای ادمین (پیش‌فرض خاموش)
+            regions_fg = folium.FeatureGroup(name="محدوده مناطق (Regions)", show=False)
             folium.GeoJson(
-                st.session_state.combined_fronts_gdf,
-                name="خطوط جبهه صیادی (Fronts)",
-                style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0}
-            ).add_to(m)
+                st.session_state.combined_region_gdf,
+                style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
+            ).add_to(regions_fg)
+            regions_fg.add_to(m)
+
+        # ۴. کادر شناور روی نقشه با تاریخ شمسی و میلادی
+        greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
+        if greg_str and jalali_str:
+            persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
+            jalali_str_fa = jalali_str.translate(persian_digits)
+            
+            date_box_html = f'''
+                <div style="position: fixed; 
+                            bottom: 25px; left: 20px; width: 250px; height: 50px; 
+                            z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
+                            border: 2px solid #2B5B84; border-radius: 6px; 
+                            padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
+                            direction: rtl; font-family: 'Vazirmatn', sans-serif;">
+                    تاریخ اخذ داده: {jalali_str_fa}<br>
+                    <span style="font-family: Arial, sans-serif; color: #333333; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
+                </div>
+            '''
+            m.get_root().html.add_child(folium.Element(date_box_html))
 
         m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
         folium.LayerControl(position='topright', collapsed=False).add_to(m)
