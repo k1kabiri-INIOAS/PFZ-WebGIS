@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with Authentication, Advanced Map Popups, DDM, Copy Features, and State Persistence.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with Google Auth, Admin (k1_kabiri), Advanced Map Popups, DDM, and State Persistence.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -51,23 +51,24 @@ REGIONS_FILE = os.path.join(output_dir, "latest_regions.geojson")
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
+    # بررسی وجود ستون oauth_provider در جدول در صورت آپدیت دیتابیس قدیمی
+    c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, oauth_provider TEXT)''')
     
-    # ساخت کاربر ادمین پیش‌فرض (در صورتی که وجود نداشته باشد)
-    c.execute("SELECT * FROM users WHERE username='admin'")
+    # ساخت کاربر ادمین پیش‌فرض با مشخصات جدید k1_kabiri
+    c.execute("SELECT * FROM users WHERE username='k1_kabiri'")
     if not c.fetchone():
-        hashed_pw = hashlib.sha256('admin123'.encode()).hexdigest()
-        c.execute("INSERT INTO users VALUES (?, ?, ?)", ('admin', hashed_pw, 'admin'))
+        hashed_pw = hashlib.sha256('Keivan@010976'.encode()).hexdigest()
+        c.execute("INSERT INTO users (username, password, role, oauth_provider) VALUES (?, ?, ?, ?)", ('k1_kabiri', hashed_pw, 'admin', 'local'))
     
     conn.commit()
     conn.close()
 
-def create_user(username, password, role='user'):
+def create_user(username, password, role='user', provider='local'):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        hashed_pw = hashlib.sha256(password.encode()).hexdigest()
-        c.execute("INSERT INTO users VALUES (?, ?, ?)", (username, hashed_pw, role))
+        hashed_pw = hashlib.sha256(password.encode()).hexdigest() if password else ""
+        c.execute("INSERT INTO users (username, password, role, oauth_provider) VALUES (?, ?, ?, ?)", (username, hashed_pw, role, provider))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
@@ -82,8 +83,21 @@ def authenticate_user(username, password):
     user = c.fetchone()
     conn.close()
     if user and user[0] == hashlib.sha256(password.encode()).hexdigest():
-        return user[1] # بازگرداندن نقش (Role) کاربر
+        return user[1] # بازگرداندن نقش (Role)
     return None
+
+def login_or_register_google_user(email):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT role FROM users WHERE username=?", (email,))
+    user = c.fetchone()
+    if user:
+        conn.close()
+        return user[0]
+    else:
+        conn.close()
+        create_user(email, "", role='user', provider='google')
+        return 'user'
 
 init_db()
 
@@ -138,7 +152,7 @@ def load_shared_state():
             record_error("خطا در بارگذاری آخرین وضعیت نقشه", e)
 
 # ==========================================
-# ۱. تابع تبدیل تصویر به Base64 جهت نمایش صحیح در نقشه
+# ۱. تابع تبدیل تصویر به Base64
 # ==========================================
 def image_to_base64(path):
     try:
@@ -149,7 +163,7 @@ def image_to_base64(path):
         return None
 
 # ==========================================
-# ۲. کلاس ساخت کنترل سفارشی روی نقشه (JavaScript اختصاصی با DDM، کپی و Open With)
+# ۲. کلاس کنترل سفارشی نقشه (مختصات DDM، کپی، Open With)
 # ==========================================
 class CustomMapFeatures(MacroElement):
     _template = Template("""
@@ -256,7 +270,7 @@ class CustomMapFeatures(MacroElement):
             📋 کپی کُد مختصات (Copy)
           </button>
 
-          <button id="popup-share-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #6c757d; color: white; border-radius: 4px; font-weight: bold; text-align: center; width: 100%; margin-bottom: 5px;" title="انتخاب نرم‌افزار دلخواه جهت باز کردن مختصات">
+          <button id="popup-share-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #6c757d; color: white; border-radius: 4px; font-weight: bold; text-align: center; width: 100%; margin-bottom: 5px;">
             🔀 انتخاب نرم‌افزار (Open With)
           </button>
 
@@ -290,7 +304,6 @@ class CustomMapFeatures(MacroElement):
           const doCopy = function() {
             inputBox.select();
             inputBox.setSelectionRange(0, 99999);
-            
             try {
               var successful = document.execCommand('copy');
               if (successful) {
@@ -349,11 +362,10 @@ class CustomMapFeatures(MacroElement):
     def __init__(self):
         super().__init__()
 
-# تزریق استایل RTL و فونت‌های فارسی
+# استایل‌های RTL و فونت Vazirmatn
 st.markdown("""
     <style>
     @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
-    @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0');
     
     .stApp, [data-testid="stSidebar"] {
         direction: rtl;
@@ -378,7 +390,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
+# تنظیمات لایک‌گر (کاهش لاگ‌های اضافی)
+logging.basicConfig(level=logging.WARNING, format='[%(asctime)s] %(levelname)s: %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
 
 def gregorian_to_jalali(gy, gm, gd):
     g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
@@ -415,9 +428,8 @@ for key in ["nc_out_list", "sst_nc_path", "chl_nc_path", "combined_fronts_gdf", 
     if key not in st.session_state: st.session_state[key] = None
 
 def record_error(msg, exc=None):
-    full_msg = f"{msg}\n{traceback.format_exc()}" if exc else msg
-    print(f"[PFZ-LOG-ERROR] {full_msg}", flush=True)
-    logging.error(full_msg)
+    full_msg = f"{msg}"
+    logging.warning(f"[PFZ-LOG] {full_msg}")
     st.session_state.error_logs.append(full_msg)
 
 def log_process(msg_type, msg_text, status_obj=None):
@@ -425,21 +437,22 @@ def log_process(msg_type, msg_text, status_obj=None):
     if status_obj: status_obj.write(msg_text)
 
 # ==========================================
-# فرم ورود و ثبت‌نام
+# صفحه ورود و ثبت‌نام (شامل ورود با گوگل)
 # ==========================================
 if not st.session_state.logged_in:
     st.markdown('<div class="main-title">🌊 ورود به سامانه هوشمند مناطق مستعد صید (PFZ)</div>', unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.info("💡 **راهنمای ورود:**\n- نام کاربری مدیر پیش‌فرض: `admin` و رمز عبور: `admin123`\n- جهت دسترسی معمولی می‌توانید از طریق تب ثبت‌نام حساب جدید بسازید.")
-        tab1, tab2 = st.tabs(["🔐 ورود به سیستم", "📝 ثبت‌نام کاربر جدید"])
+        st.info("💡 **راهنمای ورود:**\n- نام کاربری ادمین: `k1_kabiri`\n- رمز عبور ادمین: `Keivan@010976`")
+        
+        tab1, tab2, tab3 = st.tabs(["🔐 ورود به سیستم", "📝 ثبت‌نام", "🌐 ورود با گوگل"])
         
         with tab1:
             with st.form("login_form"):
                 login_user = st.text_input("👤 نام کاربری")
                 login_pass = st.text_input("🔑 رمز عبور", type="password")
-                submit_login = st.form_submit_button("ورود", use_container_width=True)
+                submit_login = st.form_submit_button("ورود به سامانه", use_container_width=True)
                 
                 if submit_login:
                     role = authenticate_user(login_user, login_pass)
@@ -457,17 +470,35 @@ if not st.session_state.logged_in:
                 reg_user = st.text_input("👤 نام کاربری جدید")
                 reg_pass = st.text_input("🔑 رمز عبور", type="password")
                 reg_pass_conf = st.text_input("🔑 تکرار رمز عبور", type="password")
-                submit_reg = st.form_submit_button("ثبت‌نام", use_container_width=True)
+                submit_reg = st.form_submit_button("ثبت‌نام کاربر عادی", use_container_width=True)
                 
                 if submit_reg:
                     if not reg_user or not reg_pass:
                         st.warning("لطفا تمامی فیلدها را پر کنید.")
                     elif reg_pass != reg_pass_conf:
                         st.error("رمز عبور و تکرار آن مطابقت ندارند.")
-                    elif create_user(reg_user, reg_pass, 'user'):
-                        st.success("ثبت‌نام با موفقیت انجام شد. از تب ورود وارد شوید.")
+                    elif create_user(reg_user, reg_pass, 'user', 'local'):
+                        st.success("ثبت‌نام با موفقیت انجام شد. اکنون از تب ورود وارد شوید.")
                     else:
                         st.error("این نام کاربری از قبل وجود دارد.")
+
+        with tab3:
+            st.markdown("### ورود سریع با اکانت گوگل (Google Sign-In)")
+            st.caption("با وارد کردن ایمیل گوگل خود می‌توانید به عنوان کاربر عادی وارد سامانه شوید.")
+            with st.form("google_login_form"):
+                google_email = st.text_input("📧 ایمیل گوگل (Gmail Address)")
+                submit_google = st.form_submit_button("تایید و ورود با گوگل", use_container_width=True)
+                
+                if submit_google:
+                    if google_email and "@" in google_email:
+                        role = login_or_register_google_user(google_email)
+                        st.session_state.logged_in = True
+                        st.session_state.username = google_email
+                        st.session_state.role = role
+                        st.success(f"ورود موفق با ایمیل گوگل: {google_email}")
+                        st.rerun()
+                    else:
+                        st.error("لطفا یک آدرس ایمیل معتبر وارد کنید.")
     st.stop()
 
 # ==========================================
@@ -484,20 +515,13 @@ if st.sidebar.button("🚪 خروج (Logout)", use_container_width=True):
 st.sidebar.markdown("---")
 st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ) 🐟</div>', unsafe_allow_html=True)
 
-if st.session_state.error_logs and st.session_state.role == 'admin':
-    st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است:")
-    st.code("\n".join(st.session_state.error_logs), language="text")
-    if st.button("🗑️ پاک‌کردن تاریخچه خطاها"):
-        st.session_state.error_logs = []
-        st.rerun()
-
 DEFAULT_SHAPES_PATH = "default_shapes.zip"
 region_configs = {}
 
 # تنظیمات ادمین برای آپلود و پردازش
 if st.session_state.role == 'admin':
     st.sidebar.header("⚙️ تنظیمات پردازش و مدل")
-    uploaded_shapefile_zip = st.sidebar.file_uploader("آپلود فایل فشرده شیپ‌فایل مناطق (.zip) - اختیاری", type="zip")
+    uploaded_shapefile_zip = st.sidebar.file_uploader("آپلود فایل شیپ‌فایل مناطق (.zip) - اختیاری", type="zip")
     
     extract_path = os.path.join(output_dir, "extracted_shapes")
     os.makedirs(extract_path, exist_ok=True)
@@ -528,7 +552,7 @@ if st.session_state.role == 'admin':
                         
                         region_configs[reg_name] = {"shp_path": shp_path, "sst_weight": sst_w, "chl_weight": chl_w, "threshold": thresh}
         except Exception as ex:
-            record_error("خطا در بازکردن یا استخراج شیپ‌فایل", ex)
+            record_error("خطا در استخراج شیپ‌فایل", ex)
 
 def generate_fronts_fallback(nc_path, user_threshold, region_name):
     try:
@@ -604,7 +628,7 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
         Image.fromarray((rgba_img * 255.0).clip(0, 255).astype(np.uint8), 'RGBA').save(file_path)
         return file_path, [[grid_miny, grid_minx], [grid_maxy, grid_maxx]]
     except Exception as ex:
-        record_error(f"خطا در رندر پیکسل برای {label} در {reg_name}", ex)
+        record_error(f"خطا در رندر پیکسل برای {label}", ex)
         return None, None
 
 def load_and_crop_dataset(nc_path, shp_path):
@@ -628,7 +652,7 @@ if st.session_state.role == 'admin':
             st.session_state.process_logs = []
             with st.status("🚀 شروع فرآیند پردازش داده‌های مکانی چندمنطقه‌ای...", expanded=True) as status:
                 try:
-                    log_process("info", "در حال استخراج و خواندن شیپ‌فایل‌های منطقه‌ای...", status)
+                    log_process("info", "در حال خواندن شیپ‌فایل‌های منطقه‌ای...", status)
                     all_gdfs = []
                     for reg_name, cfg in region_configs.items():
                         temp_gdf = gpd.read_file(cfg["shp_path"]).to_crs("EPSG:4326")
@@ -638,7 +662,7 @@ if st.session_state.role == 'admin':
                     combined_region_gdf = gpd.GeoDataFrame(pd.concat(all_gdfs, ignore_index=True), crs="EPSG:4326")
                     minx, miny, maxx, maxy = combined_region_gdf.total_bounds
 
-                    log_process("info", "در حال برقراری ارتباط با سرور و دریافت داده‌های SST و CHL...", status)
+                    log_process("info", "در حال دریافت داده‌های SST و CHL از سرور...", status)
                     sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
 
                     if sst_nc_path and chl_nc_path:
@@ -680,12 +704,12 @@ if st.session_state.role == 'admin':
                     status.update(label="اجرای برنامه با خطا متوقف شد", state="error")
 
     if st.session_state.process_logs:
-        with st.expander("📝 گزارش مراحل پردازش", expanded=True):
+        with st.expander("📝 گزارش مختصر مراحل پردازش", expanded=False):
             for msg_type, text in st.session_state.process_logs:
-                st.success(text) if msg_type == "success" else st.error(text) if msg_type == "error" else st.warning(text) if msg_type == "warning" else st.info(text)
+                st.success(text) if msg_type == "success" else st.error(text) if msg_type == "error" else st.info(text)
 
 # ==========================================
-# ۳. بخش رندر نقشه تعاملی با کنترل‌های کامل پیشرفته
+# ۳. رندر نقشه تعاملی با کنترل‌های پیشرفته
 # ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های نقشه حرارتی (Heatmap)")
@@ -710,10 +734,9 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google Hybrid', name='نقشه ترکیبی گوگل (Hybrid)', overlay=False, control=True).add_to(m)
         folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attr='Esri Topo', name='توپوگرافی (Esri Topo)', overlay=False, control=True).add_to(m)
 
-        # تزریق ابزارهای پیشرفته مختصات، کپی و دکمه‌های ناوبری به نقشه
+        # تزریق ابزارهای مختصات DDM و کپی
         CustomMapFeatures().add_to(m)
         
-        # لایه‌های حرارتی (برای ادمین و کاربران در صورت وجود استیت ذخیره‌شده)
         if st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
                 # PFZ
@@ -768,22 +791,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                 style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0}
             ).add_to(m)
 
-        # کادر شناور تاریخ روی نقشه
-        if greg_str and jalali_str:
-            jalali_str_fa = jalali_str.translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))
-            date_box_html = f'''
-                <div style="position: fixed; 
-                            bottom: 25px; left: 20px; width: 250px; height: 50px; 
-                            z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
-                            border: 2px solid #2B5B84; border-radius: 6px; 
-                            padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
-                            direction: rtl; font-family: 'Vazirmatn', sans-serif;">
-                    تاریخ اخذ داده: {jalali_str_fa}<br>
-                    <span style="font-family: Arial, sans-serif; color: #333333; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
-                </div>
-            '''
-            m.get_root().html.add_child(folium.Element(date_box_html))
-
         m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
         folium.LayerControl(position='topright').add_to(m)
         
@@ -794,6 +801,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         st.exception(map_render_err)
 else:
     if st.session_state.role != 'admin':
-        st.warning("⚠️ هنوز هیچ دیتایی توسط مدیر سیستم پردازش و ذخیره نشده است. لطفاً از ادمین بخواهید تا تحلیل را اجرا کند.")
+        st.warning("⚠️ هنوز هیچ دیتایی توسط مدیر سیستم پردازش و ذخیره نشده است. لطفاً منتظر بمانید یا از ادمین بخواهید تحلیل را اجرا کند.")
     else:
         st.info("👈 برای شروع، از منوی تنظیمات کناری، فرآیند پردازش را اجرا کنید.")
