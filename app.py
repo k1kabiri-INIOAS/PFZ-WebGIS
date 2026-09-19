@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with pixel-perfect PIL heatmaps, RTL layout, accurate Jalali date conversion, multi-basemap support, custom coordinate display, copy features, dynamic app picker (Open With), robust map render error tracking, and default shapefile fallback.
+# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with Authentication, Advanced Map Popups, DDM, Copy Features, and State Persistence.
 
 import os
 # غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
@@ -12,6 +12,9 @@ import traceback
 import logging
 import warnings
 import base64
+import json
+import sqlite3
+import hashlib
 import pandas as pd
 import streamlit as st
 import geopandas as gpd
@@ -35,7 +38,107 @@ plt.switch_backend('Agg')
 st.set_page_config(page_title="سامانه مدیریت PFZ 🐟", page_icon="🐟", layout="wide")
 
 # ==========================================
-# ۱. تابع تبدیل تصویر به Base64 جهت نمایش صحیح در نقشه (رفع مشکل لوکال پث)
+# ۰. سیستم پایگاه داده و احراز هویت (Auth)
+# ==========================================
+DB_PATH = "users.db"
+output_dir = os.path.join(tempfile.gettempdir(), "Data_Processed")
+os.makedirs(output_dir, exist_ok=True)
+
+STATE_FILE = os.path.join(output_dir, "app_state.json")
+FRONTS_FILE = os.path.join(output_dir, "latest_fronts.geojson")
+REGIONS_FILE = os.path.join(output_dir, "latest_regions.geojson")
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
+    
+    # ساخت کاربر ادمین پیش‌فرض (در صورتی که وجود نداشته باشد)
+    c.execute("SELECT * FROM users WHERE username='admin'")
+    if not c.fetchone():
+        hashed_pw = hashlib.sha256('admin123'.encode()).hexdigest()
+        c.execute("INSERT INTO users VALUES (?, ?, ?)", ('admin', hashed_pw, 'admin'))
+    
+    conn.commit()
+    conn.close()
+
+def create_user(username, password, role='user'):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        hashed_pw = hashlib.sha256(password.encode()).hexdigest()
+        c.execute("INSERT INTO users VALUES (?, ?, ?)", (username, hashed_pw, role))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def authenticate_user(username, password):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT password, role FROM users WHERE username=?", (username,))
+    user = c.fetchone()
+    conn.close()
+    if user and user[0] == hashlib.sha256(password.encode()).hexdigest():
+        return user[1] # بازگرداندن نقش (Role) کاربر
+    return None
+
+init_db()
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.session_state.role = ""
+
+# ==========================================
+# ذخیره و بازیابی آخرین وضعیت نقشه (اشتراک‌گذاری بین کاربران)
+# ==========================================
+def save_shared_state():
+    if st.session_state.combined_fronts_gdf is not None:
+        st.session_state.combined_fronts_gdf.to_file(FRONTS_FILE, driver="GeoJSON")
+    if st.session_state.combined_region_gdf is not None:
+        st.session_state.combined_region_gdf.to_file(REGIONS_FILE, driver="GeoJSON")
+    
+    with open(STATE_FILE, "w") as f:
+        json.dump({
+            "latest_date": st.session_state.latest_date,
+            "minx": st.session_state.minx,
+            "miny": st.session_state.miny,
+            "maxx": st.session_state.maxx,
+            "maxy": st.session_state.maxy,
+            "nc_out_list": st.session_state.nc_out_list,
+            "sst_nc_path": st.session_state.sst_nc_path,
+            "chl_nc_path": st.session_state.chl_nc_path
+        }, f)
+
+def load_shared_state():
+    if os.path.exists(STATE_FILE) and os.path.exists(REGIONS_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+            st.session_state.latest_date = state.get("latest_date")
+            st.session_state.minx = state.get("minx")
+            st.session_state.miny = state.get("miny")
+            st.session_state.maxx = state.get("maxx")
+            st.session_state.maxy = state.get("maxy")
+            st.session_state.nc_out_list = state.get("nc_out_list")
+            st.session_state.sst_nc_path = state.get("sst_nc_path")
+            st.session_state.chl_nc_path = state.get("chl_nc_path")
+            
+            st.session_state.combined_region_gdf = gpd.read_file(REGIONS_FILE)
+            if os.path.exists(FRONTS_FILE):
+                st.session_state.combined_fronts_gdf = gpd.read_file(FRONTS_FILE)
+            else:
+                st.session_state.combined_fronts_gdf = None
+                
+            st.session_state.analysis_done = True
+        except Exception as e:
+            record_error("خطا در بارگذاری آخرین وضعیت نقشه", e)
+
+# ==========================================
+# ۱. تابع تبدیل تصویر به Base64 جهت نمایش صحیح در نقشه
 # ==========================================
 def image_to_base64(path):
     try:
@@ -46,18 +149,9 @@ def image_to_base64(path):
         return None
 
 # ==========================================
-# ۲. کلاس ساخت کنترل سفارشی روی نقشه (JavaScript اختصاصی)
+# ۲. کلاس ساخت کنترل سفارشی روی نقشه (JavaScript اختصاصی با DDM، کپی و Open With)
 # ==========================================
 class CustomMapFeatures(MacroElement):
-    """
-    تزریق کدهای جاوااسکریپت به نقشه جهت:
-    - نمایش لحظه‌ای مختصات
-    - سوئیچ بین فرمت‌های DD و DDM (درجه و دقیقه اعشاری)
-    - کپی تضمینی متن مختصات در پاپ‌آپ
-    - دکمه Open With (اشتراک‌گذاری بومی جهت انتخاب نرم‌افزار دلخواه کاربر)
-    - دسترسی مستقیم به گوگل مپ، OpenSeaMap و Windy
-    - ثبت مارکر تعاملی با کلیک روی نقشه
-    """
     _template = Template("""
     {% macro script(this, kwargs) %}
     
@@ -67,7 +161,6 @@ class CustomMapFeatures(MacroElement):
     let lastLatLng = null;
     let currentMarker = null;
 
-    // تابع تبدیل فرمت اعشاری (DD) به درجه و دقیقه اعشاری (DDM)
     function toDDM(deg, isLat) {
       const absolute = Math.abs(deg);
       const degrees = Math.floor(absolute);
@@ -76,7 +169,6 @@ class CustomMapFeatures(MacroElement):
       return `${degrees}° ${decimalMinutes}' ${direction}`;
     }
 
-    // تابع بروزرسانی متن باکس مختصات گوشه صفحه
     function updateCoordDisplay(latlng) {
       const displayElement = document.getElementById('coord-text');
       if (!displayElement || !latlng) return;
@@ -88,7 +180,6 @@ class CustomMapFeatures(MacroElement):
       }
     }
 
-    // ساخت کنترل (باکس گوشه پایین سمت راست)
     const coordControl = L.control({ position: 'bottomright' });
 
     coordControl.onAdd = function (map) {
@@ -132,13 +223,11 @@ class CustomMapFeatures(MacroElement):
 
     coordControl.addTo(map);
 
-    // رویداد حرکت ماوس (آپدیت نمایش مختصات)
     map.on('mousemove', function (e) {
       lastLatLng = e.latlng;
       updateCoordDisplay(e.latlng);
     });
 
-    // رویداد کلیک روی نقشه (ایجاد مارکر و پاپ‌آپ شامل کپی مختصات و گزینه‌های ناوبری)
     map.on('click', function (e) {
       const latlng = e.latlng;
       if (currentMarker) {
@@ -260,7 +349,6 @@ class CustomMapFeatures(MacroElement):
     def __init__(self):
         super().__init__()
 
-
 # تزریق استایل RTL و فونت‌های فارسی
 st.markdown("""
     <style>
@@ -276,19 +364,8 @@ st.markdown("""
         font-family: 'Vazirmatn', sans-serif;
     }
 
-    .material-symbols-rounded, 
-    .material-symbols-outlined, 
-    [data-testid="stIconMaterial"], 
-    i.material-icons,
-    .stIcon,
-    svg,
-    svg * {
-        font-family: 'Material Symbols Rounded', 'Material Icons', sans-serif !important;
-        direction: ltr !important;
-    }
-
     .main-title {
-        font-size: 2rem !important;
+        font-size: 2.0rem !important;
         color: #1E3A8A;
         font-weight: bold;
         margin-bottom: 1rem;
@@ -301,11 +378,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s: %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
 
 def gregorian_to_jalali(gy, gm, gd):
     g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
@@ -327,449 +400,336 @@ def gregorian_to_jalali(gy, gm, gd):
     return jy, jm, jd
 
 def parse_date_formats(date_str):
-    if not date_str:
-        return None, None
+    if not date_str: return None, None
     try:
         dt = pd.to_datetime(date_str)
-        greg_str = dt.strftime("%Y-%m-%d")
         jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
-        jalali_str = f"{jy}/{jm:02d}/{jd:02d}"
-        return greg_str, jalali_str
+        return dt.strftime("%Y-%m-%d"), f"{jy}/{jm:02d}/{jd:02d}"
     except Exception:
         return str(date_str), None
 
-if "error_logs" not in st.session_state:
-    st.session_state.error_logs = []
-if "process_logs" not in st.session_state:
-    st.session_state.process_logs = []
-if "analysis_done" not in st.session_state:
-    st.session_state.analysis_done = False
+if "error_logs" not in st.session_state: st.session_state.error_logs = []
+if "process_logs" not in st.session_state: st.session_state.process_logs = []
+if "analysis_done" not in st.session_state: st.session_state.analysis_done = False
 for key in ["nc_out_list", "sst_nc_path", "chl_nc_path", "combined_fronts_gdf", "combined_region_gdf", "minx", "miny", "maxx", "maxy", "latest_date"]:
-    if key not in st.session_state:
-        st.session_state[key] = None
+    if key not in st.session_state: st.session_state[key] = None
 
 def record_error(msg, exc=None):
-    full_msg = msg
-    if exc:
-        full_msg += f"\n{traceback.format_exc()}"
+    full_msg = f"{msg}\n{traceback.format_exc()}" if exc else msg
     print(f"[PFZ-LOG-ERROR] {full_msg}", flush=True)
     logging.error(full_msg)
     st.session_state.error_logs.append(full_msg)
 
 def log_process(msg_type, msg_text, status_obj=None):
     st.session_state.process_logs.append((msg_type, msg_text))
-    if status_obj:
-        status_obj.write(msg_text)
+    if status_obj: status_obj.write(msg_text)
 
+# ==========================================
+# فرم ورود و ثبت‌نام
+# ==========================================
+if not st.session_state.logged_in:
+    st.markdown('<div class="main-title">🌊 ورود به سامانه هوشمند مناطق مستعد صید (PFZ)</div>', unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.info("💡 **راهنمای ورود:**\n- نام کاربری مدیر پیش‌فرض: `admin` و رمز عبور: `admin123`\n- جهت دسترسی معمولی می‌توانید از طریق تب ثبت‌نام حساب جدید بسازید.")
+        tab1, tab2 = st.tabs(["🔐 ورود به سیستم", "📝 ثبت‌نام کاربر جدید"])
+        
+        with tab1:
+            with st.form("login_form"):
+                login_user = st.text_input("👤 نام کاربری")
+                login_pass = st.text_input("🔑 رمز عبور", type="password")
+                submit_login = st.form_submit_button("ورود", use_container_width=True)
+                
+                if submit_login:
+                    role = authenticate_user(login_user, login_pass)
+                    if role:
+                        st.session_state.logged_in = True
+                        st.session_state.username = login_user
+                        st.session_state.role = role
+                        st.success(f"خوش آمدید {login_user}!")
+                        st.rerun()
+                    else:
+                        st.error("نام کاربری یا رمز عبور اشتباه است.")
+                        
+        with tab2:
+            with st.form("register_form"):
+                reg_user = st.text_input("👤 نام کاربری جدید")
+                reg_pass = st.text_input("🔑 رمز عبور", type="password")
+                reg_pass_conf = st.text_input("🔑 تکرار رمز عبور", type="password")
+                submit_reg = st.form_submit_button("ثبت‌نام", use_container_width=True)
+                
+                if submit_reg:
+                    if not reg_user or not reg_pass:
+                        st.warning("لطفا تمامی فیلدها را پر کنید.")
+                    elif reg_pass != reg_pass_conf:
+                        st.error("رمز عبور و تکرار آن مطابقت ندارند.")
+                    elif create_user(reg_user, reg_pass, 'user'):
+                        st.success("ثبت‌نام با موفقیت انجام شد. از تب ورود وارد شوید.")
+                    else:
+                        st.error("این نام کاربری از قبل وجود دارد.")
+    st.stop()
+
+# ==========================================
+# بدنه اصلی برنامه پس از لاگین موفق
+# ==========================================
+load_shared_state()
+
+st.sidebar.markdown(f"### 👤 سلام **{st.session_state.username}**")
+st.sidebar.caption(f"🛡️ سطح دسترسی: **{'مدیر سیستم (Admin)' if st.session_state.role == 'admin' else 'کاربر عادی (User)'}**")
+if st.sidebar.button("🚪 خروج (Logout)", use_container_width=True):
+    st.session_state.logged_in = False
+    st.rerun()
+
+st.sidebar.markdown("---")
 st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ) 🐟</div>', unsafe_allow_html=True)
 
-if st.session_state.error_logs:
+if st.session_state.error_logs and st.session_state.role == 'admin':
     st.error("⚠️ خطاهایی در حین اجرای برنامه رخ داده است:")
-    all_logs_str = "\n".join(st.session_state.error_logs)
-    st.code(all_logs_str, language="text")
+    st.code("\n".join(st.session_state.error_logs), language="text")
     if st.button("🗑️ پاک‌کردن تاریخچه خطاها"):
         st.session_state.error_logs = []
         st.rerun()
 
-st.sidebar.header("⚙️ تنظیمات پردازش و مدل")
-
 DEFAULT_SHAPES_PATH = "default_shapes.zip"
-
-uploaded_shapefile_zip = st.sidebar.file_uploader(
-    "آپلود فایل فشرده شیپ‌فایل مناطق (.zip) - اختیاری", 
-    type="zip"
-)
-
-output_dir = os.path.join(tempfile.gettempdir(), "Data_Processed")
-os.makedirs(output_dir, exist_ok=True)
-
-extract_path = os.path.join(output_dir, "extracted_shapes")
-os.makedirs(extract_path, exist_ok=True)
-
-zip_to_extract = None
-if uploaded_shapefile_zip is not None:
-    zip_to_extract = uploaded_shapefile_zip
-    st.sidebar.success("📂 فایل شیپ‌فایل جدید آپلود شد.")
-elif os.path.exists(DEFAULT_SHAPES_PATH):
-    zip_to_extract = DEFAULT_SHAPES_PATH
-    st.sidebar.info("ℹ️ استفاده از فایل پیش‌فرض مناطق (default_shapes.zip)")
-
 region_configs = {}
-if zip_to_extract is not None:
-    try:
-        with zipfile.ZipFile(zip_to_extract, 'r') as zip_ref:
-            zip_ref.extractall(extract_path)
-        
-        shp_files = []
-        for r, d, files in os.walk(extract_path):
-            for f in files:
-                if f.endswith('.shp') and not f.startswith('._'):
-                    shp_files.append(os.path.join(r, f))
-        
-        if shp_files:
-            st.sidebar.subheader("📌 تنظیمات اختصاصی هر منطقه")
+
+# تنظیمات ادمین برای آپلود و پردازش
+if st.session_state.role == 'admin':
+    st.sidebar.header("⚙️ تنظیمات پردازش و مدل")
+    uploaded_shapefile_zip = st.sidebar.file_uploader("آپلود فایل فشرده شیپ‌فایل مناطق (.zip) - اختیاری", type="zip")
+    
+    extract_path = os.path.join(output_dir, "extracted_shapes")
+    os.makedirs(extract_path, exist_ok=True)
+    
+    zip_to_extract = uploaded_shapefile_zip if uploaded_shapefile_zip else DEFAULT_SHAPES_PATH if os.path.exists(DEFAULT_SHAPES_PATH) else None
+    
+    if zip_to_extract is not None:
+        try:
+            with zipfile.ZipFile(zip_to_extract, 'r') as zip_ref:
+                zip_ref.extractall(extract_path)
             
-            DEFAULT_REGION_DEFAULTS = {
-                "Persian Gulf": {"sst_w": 0.70, "thresh": 0.40}
-            }
+            shp_files = [os.path.join(r, f) for r, d, files in os.walk(extract_path) for f in files if f.endswith('.shp') and not f.startswith('._')]
             
-            for shp_path in sorted(shp_files):
-                reg_name = os.path.splitext(os.path.basename(shp_path))[0].replace("_", " ").title()
+            if shp_files:
+                st.sidebar.subheader("📌 تنظیمات اختصاصی هر منطقه")
+                DEFAULT_REGION_DEFAULTS = {"Persian Gulf": {"sst_w": 0.70, "thresh": 0.40}}
                 
-                def_sst = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get("sst_w", 0.60)
-                def_thresh = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get("thresh", 0.50)
-                
-                with st.sidebar.expander(f"منطقه: {reg_name}", expanded=True):
-                    sst_w = st.slider(f"وزن SST ({reg_name})", 0.0, 1.0, def_sst, 0.05, key=f"sst_{reg_name}")
-                    chl_w = round(1.0 - sst_w, 2)
-                    st.caption(f"وزن کلروفیل-آ: **{chl_w}**")
+                for shp_path in sorted(shp_files):
+                    reg_name = os.path.splitext(os.path.basename(shp_path))[0].replace("_", " ").title()
+                    def_sst = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get("sst_w", 0.60)
+                    def_thresh = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get("thresh", 0.50)
                     
-                    thresh = st.slider(f"آستانه حساسیت ({reg_name})", 0.1, 1.0, def_thresh, 0.05, key=f"thresh_{reg_name}")
-                    
-                    region_configs[reg_name] = {
-                        "shp_path": shp_path,
-                        "sst_weight": sst_w,
-                        "chl_weight": chl_w,
-                        "threshold": thresh
-                    }
-        else:
-            st.sidebar.error("هیچ فایل .shp معتبری در فایل ZIP یافت نشد.")
-    except Exception as ex:
-        record_error("خطا در بازکردن یا استخراج شیپ‌فایل", ex)
-else:
-    st.sidebar.warning("⚠️ لطفاً فایل فشرده شیپ‌فایل (.zip) را آپلود کنید یا مطمئن شوید فایل `default_shapes.zip` در مسیر برنامه موجود است.")
+                    with st.sidebar.expander(f"منطقه: {reg_name}", expanded=True):
+                        sst_w = st.slider(f"وزن SST ({reg_name})", 0.0, 1.0, def_sst, 0.05, key=f"sst_{reg_name}")
+                        chl_w = round(1.0 - sst_w, 2)
+                        st.caption(f"وزن کلروفیل-آ: **{chl_w}**")
+                        thresh = st.slider(f"آستانه حساسیت ({reg_name})", 0.1, 1.0, def_thresh, 0.05, key=f"thresh_{reg_name}")
+                        
+                        region_configs[reg_name] = {"shp_path": shp_path, "sst_weight": sst_w, "chl_weight": chl_w, "threshold": thresh}
+        except Exception as ex:
+            record_error("خطا در بازکردن یا استخراج شیپ‌فایل", ex)
 
 def generate_fronts_fallback(nc_path, user_threshold, region_name):
     try:
-        if not nc_path or not os.path.exists(nc_path):
-            record_error(f"فایل NetCDF وجود ندارد: {nc_path}")
-            return None
-
+        if not nc_path or not os.path.exists(nc_path): return None
         with xr.open_dataset(nc_path) as ds:
             var_key = "pfz_index" if "pfz_index" in ds else list(ds.data_vars.keys())[0]
             da = ds[var_key].load()
-            
-            lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
-            lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
-            
-            if not lat_name or not lon_name:
-                record_error("ابعاد مکانی (lat/lon) به درستی در فایل NetCDF یافت نشد.")
-                return None
-                
+            lat_name, lon_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None), next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+            if not lat_name or not lon_name: return None
             da = da.sortby(lat_name, ascending=True).sortby(lon_name, ascending=True)
-            lats = da[lat_name].values
-            lons = da[lon_name].values
-            
             if da.ndim > 2:
-                non_spatial_dims = [d for d in da.dims if d not in [lat_name, lon_name]]
-                for d in non_spatial_dims:
-                    da = da.isel({d: 0})
-            
-            data = da.values.copy()
+                for d in [d for d in da.dims if d not in [lat_name, lon_name]]: da = da.isel({d: 0})
+            data, lats, lons = da.values.copy(), da[lat_name].values, da[lon_name].values
             
         valid_mask = ~np.isnan(data) & (data > 0)
-        if not valid_mask.any():
-            return None
+        if not valid_mask.any(): return None
 
-        mean_val = float(np.nanmean(data[valid_mask]))
-        data_filled = np.where(valid_mask, data, mean_val)
-        data_smoothed = ndimage.gaussian_filter(data_filled, sigma=1.0).astype(float)
-
+        data_smoothed = ndimage.gaussian_filter(np.where(valid_mask, data, float(np.nanmean(data[valid_mask]))), sigma=1.0).astype(float)
         eroded_mask = ndimage.binary_erosion(valid_mask, structure=np.ones((3, 3)), iterations=1)
-        if not eroded_mask.any():
-            eroded_mask = valid_mask
+        if not eroded_mask.any(): eroded_mask = valid_mask
 
         data_smoothed[~eroded_mask] = np.nan
         valid_smoothed = data_smoothed[eroded_mask]
-        if len(valid_smoothed) == 0:
-            return None
+        if len(valid_smoothed) == 0: return None
 
         smooth_max = float(np.nanmax(valid_smoothed))
-        active_threshold = user_threshold
-        if active_threshold >= smooth_max:
-            active_threshold = smooth_max * 0.80
-
+        active_threshold = user_threshold if user_threshold < smooth_max else smooth_max * 0.80
         lon_grid, lat_grid = np.meshgrid(lons, lats)
         
         def extract_lines(t_val):
             fig, ax = plt.subplots()
             cs = ax.contour(lon_grid, lat_grid, data_smoothed, levels=[t_val])
-            extracted = []
-            for segs in cs.allsegs:
-                for poly in segs:
-                    if len(poly) > 2:
-                        extracted.append(LineString(poly))
+            extracted = [LineString(poly) for segs in cs.allsegs for poly in segs if len(poly) > 2]
             plt.close(fig)
             return extracted
 
-        lines = extract_lines(active_threshold)
-        if not lines:
-            fallback_percents = [0.60, 0.40, 0.20]
-            for pct in fallback_percents:
-                test_t = smooth_max * pct
-                if test_t <= 0: continue
-                lines = extract_lines(test_t)
-                if lines:
-                    active_threshold = test_t
-                    break
+        lines = extract_lines(active_threshold) or extract_lines(smooth_max * 0.60) or extract_lines(smooth_max * 0.40)
         
         if lines:
             gdf_fronts = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
             gdf_fronts['Region'] = region_name
             gdf_fronts['Threshold'] = active_threshold
-            gdf_fronts = gdf_fronts.to_crs("EPSG:3857")
-            gdf_fronts['Length_km'] = gdf_fronts.geometry.length / 1000
-            gdf_fronts = gdf_fronts.to_crs("EPSG:4326")
+            gdf_fronts['Length_km'] = gdf_fronts.to_crs("EPSG:3857").geometry.length / 1000
+            return gdf_fronts[gdf_fronts['Length_km'] > 0.5] if not gdf_fronts[gdf_fronts['Length_km'] > 0.5].empty else None
             
-            gdf_fronts = gdf_fronts[gdf_fronts['Length_km'] > 0.5]
-            return gdf_fronts if not gdf_fronts.empty else None
-            
-    except Exception as ex:
-        record_error(f"خطا در استخراج جبهه برای منطقه {region_name}", ex)
+    except Exception as ex: record_error(f"خطا در استخراج جبهه برای {region_name}", ex)
     return None
 
 def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
     try:
-        lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
-        lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
-        if not lat_name or not lon_name:
-            return None, None
-
+        lat_name, lon_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None), next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+        if not lat_name or not lon_name: return None, None
         if extra_dims := [d for d in da.dims if d not in [lat_name, lon_name]]:
-            for d in extra_dims:
-                da = da.isel({d: 0})
+            for d in extra_dims: da = da.isel({d: 0})
 
         da = da.sortby(lat_name, ascending=True).sortby(lon_name, ascending=True)
-
-        lats = da[lat_name].values
-        lons = da[lon_name].values
-        data_arr = da.values.copy().astype(float)
-
-        ny, nx = data_arr.shape
-        if ny < 2 or nx < 2:
-            return None, None
-
-        dx = float(np.abs(lons[1] - lons[0])) / 2.0 if len(lons) > 1 else 0.025
-        dy = float(np.abs(lats[1] - lats[0])) / 2.0 if len(lats) > 1 else 0.025
-
-        grid_minx = float(lons[0]) - dx
-        grid_maxx = float(lons[-1]) + dx
-        grid_miny = float(lats[0]) - dy
-        grid_maxy = float(lats[-1]) + dy
+        lats, lons, data_arr = da[lat_name].values, da[lon_name].values, da.values.copy().astype(float)
+        
+        dx, dy = float(np.abs(lons[1] - lons[0])) / 2.0 if len(lons) > 1 else 0.025, float(np.abs(lats[1] - lats[0])) / 2.0 if len(lats) > 1 else 0.025
+        grid_minx, grid_maxx, grid_miny, grid_maxy = float(lons[0]) - dx, float(lons[-1]) + dx, float(lats[0]) - dy, float(lats[-1]) + dy
 
         valid_mask = ~np.isnan(data_arr) & (data_arr > 0)
-        if not valid_mask.any():
-            return None, None
+        if not valid_mask.any(): return None, None
 
         vmin, vmax = float(np.nanmin(data_arr[valid_mask])), float(np.nanmax(data_arr[valid_mask]))
-        norm_arr = np.zeros_like(data_arr)
-        if vmax > vmin:
-            norm_arr = (data_arr - vmin) / (vmax - vmin)
-
-        colormap = plt.get_cmap(cmap_name)
-        rgba_img = colormap(norm_arr)
+        norm_arr = (data_arr - vmin) / (vmax - vmin) if vmax > vmin else np.zeros_like(data_arr)
+        
+        rgba_img = plt.get_cmap(cmap_name)(norm_arr)
         rgba_img[~valid_mask] = [0.0, 0.0, 0.0, 0.0]
-
         rgba_img = np.flipud(rgba_img)
 
-        img_uint8 = (rgba_img * 255.0).clip(0, 255).astype(np.uint8)
-        img = Image.fromarray(img_uint8, 'RGBA')
-
         file_path = os.path.join(out_dir, f"{label}_{reg_name.replace(' ', '_')}.png")
-        img.save(file_path)
-
-        bounds = [[grid_miny, grid_minx], [grid_maxy, grid_maxx]]
-        return file_path, bounds
+        Image.fromarray((rgba_img * 255.0).clip(0, 255).astype(np.uint8), 'RGBA').save(file_path)
+        return file_path, [[grid_miny, grid_minx], [grid_maxy, grid_maxx]]
     except Exception as ex:
         record_error(f"خطا در رندر پیکسل برای {label} در {reg_name}", ex)
         return None, None
 
 def load_and_crop_dataset(nc_path, shp_path):
-    if not nc_path or not os.path.exists(nc_path):
-        return None
+    if not nc_path or not os.path.exists(nc_path): return None
     try:
         with xr.open_dataset(nc_path) as ds:
-            var_key = list(ds.data_vars.keys())[0]
-            da = ds[var_key].load()
-        
-        gdf = gpd.read_file(shp_path)
-        if gdf.crs is not None and gdf.crs != "EPSG:4326":
-            gdf = gdf.to_crs("EPSG:4326")
-            
+            da = ds[list(ds.data_vars.keys())[0]].load()
+        gdf = gpd.read_file(shp_path).to_crs("EPSG:4326")
         minx, miny, maxx, maxy = gdf.total_bounds
-        lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
-        lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
-        
-        if lat_name and lon_name:
-            da = da.sortby(lat_name, ascending=True).sortby(lon_name, ascending=True)
-            da_cropped = da.sel({lat_name: slice(miny - 0.05, maxy + 0.05), lon_name: slice(minx - 0.05, maxx + 0.05)})
-            return da_cropped
+        lat_name, lon_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None), next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+        return da.sortby(lat_name).sortby(lon_name).sel({lat_name: slice(miny - 0.05, maxy + 0.05), lon_name: slice(minx - 0.05, maxx + 0.05)}) if lat_name and lon_name else None
     except Exception as ex:
         record_error(f"خطا در برش داده {nc_path}", ex)
     return None
 
-if st.sidebar.button("🚀 دریافت داده‌های به‌روز و اجرای تحلیل"):
-    if not region_configs:
-        st.error("لطفاً فایل فشرده شیپ‌فایل مناطق (.zip) را آپلود کنید یا مطمئن شوید فایل default_shapes.zip وجود دارد.")
-    else:
-        st.session_state.process_logs = []
-        with st.status("🚀 شروع فرآیند پردازش داده‌های مکانی چندمنطقه‌ای...", expanded=True) as status:
-            try:
-                log_process("info", "در حال استخراج و خواندن شیپ‌فایل‌های منطقه‌ای...", status)
-                all_gdfs = []
-                for reg_name, cfg in region_configs.items():
-                    temp_gdf = gpd.read_file(cfg["shp_path"])
-                    if temp_gdf.crs is not None and temp_gdf.crs != "EPSG:4326":
-                        temp_gdf = temp_gdf.to_crs("EPSG:4326")
-                    temp_gdf["Region"] = reg_name
-                    all_gdfs.append(temp_gdf)
-
-                combined_region_gdf = gpd.GeoDataFrame(pd.concat(all_gdfs, ignore_index=True), crs="EPSG:4326")
-                minx, miny, maxx, maxy = combined_region_gdf.total_bounds
-
-                log_process("info", "در حال برقراری ارتباط با سرور و دریافت داده‌های SST و CHL...", status)
+if st.session_state.role == 'admin':
+    if st.sidebar.button("🚀 دریافت داده‌های به‌روز و اجرای تحلیل", use_container_width=True):
+        if not region_configs:
+            st.error("تنظیمات مناطق بارگذاری نشده است.")
+        else:
+            st.session_state.process_logs = []
+            with st.status("🚀 شروع فرآیند پردازش داده‌های مکانی چندمنطقه‌ای...", expanded=True) as status:
                 try:
-                    sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
-                except Exception as fetch_ex:
-                    record_error("خطا در ماژول fetch_near_realtime_data", fetch_ex)
-                    sst_nc_path, chl_nc_path, latest_date = None, None, None
-
-                if sst_nc_path and chl_nc_path:
-                    greg_d, jalali_d = parse_date_formats(latest_date)
-                    log_process("success", f"داده‌های ماهواره‌ای با موفقیت دریافت شدند. (تاریخ اخذ داده: {jalali_d} | Data Acquisition Date: {greg_d})", status)
-                    
-                    all_front_gdfs = []
-                    nc_out_list = []
-
+                    log_process("info", "در حال استخراج و خواندن شیپ‌فایل‌های منطقه‌ای...", status)
+                    all_gdfs = []
                     for reg_name, cfg in region_configs.items():
-                        log_process("info", f"در حال پردازش **{reg_name}** (وزن SST: {cfg['sst_weight']} | آستانه: {cfg['threshold']})...", status)
+                        temp_gdf = gpd.read_file(cfg["shp_path"]).to_crs("EPSG:4326")
+                        temp_gdf["Region"] = reg_name
+                        all_gdfs.append(temp_gdf)
+
+                    combined_region_gdf = gpd.GeoDataFrame(pd.concat(all_gdfs, ignore_index=True), crs="EPSG:4326")
+                    minx, miny, maxx, maxy = combined_region_gdf.total_bounds
+
+                    log_process("info", "در حال برقراری ارتباط با سرور و دریافت داده‌های SST و CHL...", status)
+                    sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
+
+                    if sst_nc_path and chl_nc_path:
+                        log_process("success", "داده‌های ماهواره‌ای با موفقیت دریافت شدند.", status)
+                        all_front_gdfs, nc_out_list = [], []
+
+                        for reg_name, cfg in region_configs.items():
+                            log_process("info", f"در حال پردازش **{reg_name}**...", status)
+                            try:
+                                nc_out, _, _ = process_pfz_pipeline(cfg["shp_path"], sst_nc_path, chl_nc_path, os.path.join(output_dir, reg_name.replace(" ", "_")), cfg["sst_weight"], cfg["chl_weight"])
+                            except Exception as proc_ex:
+                                record_error(f"خطا در مدل منطقه {reg_name}", proc_ex)
+                                nc_out = None
+
+                            if nc_out:
+                                nc_out_list.append((reg_name, nc_out, cfg["shp_path"]))
+                                reg_fronts_gdf = generate_fronts_fallback(nc_out, cfg["threshold"], reg_name)
+                                if reg_fronts_gdf is not None:
+                                    all_front_gdfs.append(reg_fronts_gdf)
+                                    log_process("success", f"جبهه‌های منطقه {reg_name} استخراج گردید.", status)
+
+                        st.session_state.combined_fronts_gdf = pd.concat(all_front_gdfs, ignore_index=True) if all_front_gdfs else None
+                        st.session_state.combined_region_gdf = combined_region_gdf
+                        st.session_state.nc_out_list = nc_out_list
+                        st.session_state.sst_nc_path = sst_nc_path
+                        st.session_state.chl_nc_path = chl_nc_path
+                        st.session_state.latest_date = latest_date
+                        st.session_state.minx, st.session_state.miny, st.session_state.maxx, st.session_state.maxy = minx, miny, maxx, maxy
+                        st.session_state.analysis_done = True
                         
-                        reg_out_dir = os.path.join(output_dir, reg_name.replace(" ", "_"))
-                        try:
-                            nc_out, _, _ = process_pfz_pipeline(
-                                cfg["shp_path"], sst_nc_path, chl_nc_path, reg_out_dir, 
-                                cfg["sst_weight"], cfg["chl_weight"]
-                            )
-                        except Exception as proc_ex:
-                            record_error(f"خطا در پردازش مدل منطقه {reg_name}", proc_ex)
-                            nc_out = None
+                        save_shared_state()
+                        status.update(label="تمام مراحل پردازش با موفقیت به پایان رسید!", state="complete")
+                    else:
+                        log_process("error", "فایل‌های SST یا CHL دریافت نشدند.", status)
+                        status.update(label="پردازش متوقف شد", state="error")
 
-                        if nc_out:
-                            nc_out_list.append((reg_name, nc_out, cfg["shp_path"]))
-                            reg_fronts_gdf = generate_fronts_fallback(nc_out, cfg["threshold"], reg_name)
-                            if reg_fronts_gdf is not None:
-                                all_front_gdfs.append(reg_fronts_gdf)
-                                log_process("success", f"جبهه‌های منطقه {reg_name} استخراج گردید.", status)
-                            else:
-                                log_process("warning", f"جبهه‌ای در منطقه {reg_name} یافت نشد.", status)
+                except Exception as global_ex:
+                    record_error("خطای کلی در جریان اجرای برنامه", global_ex)
+                    status.update(label="اجرای برنامه با خطا متوقف شد", state="error")
 
-                    st.session_state.combined_fronts_gdf = pd.concat(all_front_gdfs, ignore_index=True) if all_front_gdfs else None
-                    st.session_state.combined_region_gdf = combined_region_gdf
-                    st.session_state.nc_out_list = nc_out_list
-                    st.session_state.sst_nc_path = sst_nc_path
-                    st.session_state.chl_nc_path = chl_nc_path
-                    st.session_state.latest_date = latest_date
-                    st.session_state.minx, st.session_state.miny, st.session_state.maxx, st.session_state.maxy = minx, miny, maxx, maxy
-                    st.session_state.analysis_done = True
-                    status.update(label="تمام مراحل پردازش با موفقیت به پایان رسید!", state="complete")
-                else:
-                    log_process("error", "فایل‌های SST یا CHL دریافت نشدند.", status)
-                    status.update(label="پردازش متوقف شد", state="error")
-
-            except Exception as global_ex:
-                record_error("خطای کلی در جریان اجرای برنامه", global_ex)
-                log_process("error", f"خطای سیستمی رخ داد: {global_ex}", status)
-                status.update(label="اجرای برنامه با خطا متوقف شد", state="error")
-
-if st.session_state.process_logs:
-    with st.expander("📝 گزارش مراحل پردازش", expanded=True):
-        for msg_type, text in st.session_state.process_logs:
-            if msg_type == "success":
-                st.success(text)
-            elif msg_type == "error":
-                st.error(text)
-            elif msg_type == "warning":
-                st.warning(text)
-            else:
-                st.info(text)
+    if st.session_state.process_logs:
+        with st.expander("📝 گزارش مراحل پردازش", expanded=True):
+            for msg_type, text in st.session_state.process_logs:
+                st.success(text) if msg_type == "success" else st.error(text) if msg_type == "error" else st.warning(text) if msg_type == "warning" else st.info(text)
 
 # ==========================================
-# ۳. بخش نمایش نقشه تعاملی با مدیریت خطا و بیس64
+# ۳. بخش رندر نقشه تعاملی با کنترل‌های کامل پیشرفته
 # ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
     st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های نقشه حرارتی (Heatmap)")
     
+    if st.session_state.role != 'admin':
+        st.info("🔹 شما به عنوان **کاربر** وارد شده‌اید. می‌توانید روی نقشه کلیک کنید تا مختصات دقیق را به صورت DD یا DDM کپی کرده یا در گوگل‌مپ، Windy و OpenSeaMap باز کنید.")
+    
     try:
         greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
-        
         if greg_str and jalali_str:
-            persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
-            jalali_str_fa = jalali_str.translate(persian_digits)
-            st.info(f"📅 **تاریخ اخذ داده:** `{jalali_str_fa}` | **Data Acquisition Date:** `{greg_str}`")
+            jalali_str_fa = jalali_str.translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))
+            st.success(f"📅 **تاریخ اخذ داده:** `{jalali_str_fa}` | **Data Acquisition Date:** `{greg_str}`")
 
-        # ساخت نقشه پایه بدون کاشی پیش‌فرض
         m = folium.Map(
             location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
             zoom_start=6, 
             tiles=None
         )
         
-        # 🌐 افزودن سرویس‌های نقشه پس‌زمینه (Basemaps)
         folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)').add_to(m)
-        
-        folium.TileLayer(
-            tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
-            attr='Google Satellite',
-            name='تصاویر ماهواره‌ای گوگل (Satellite)',
-            overlay=False,
-            control=True
-        ).add_to(m)
-        
-        folium.TileLayer(
-            tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
-            attr='Google Hybrid',
-            name='نقشه ترکیبی گوگل (Hybrid)',
-            overlay=False,
-            control=True
-        ).add_to(m)
+        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='تصاویر ماهواره‌ای گوگل (Satellite)', overlay=False, control=True).add_to(m)
+        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google Hybrid', name='نقشه ترکیبی گوگل (Hybrid)', overlay=False, control=True).add_to(m)
+        folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attr='Esri Topo', name='توپوگرافی (Esri Topo)', overlay=False, control=True).add_to(m)
 
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
-            attr='Esri Topo',
-            name='توپوگرافی (Esri Topo)',
-            overlay=False,
-            control=True
-        ).add_to(m)
-
-        # 📍 تزریق کنترل سفارشی مختصات، کپی، و دکمه‌های ناوبری
+        # تزریق ابزارهای پیشرفته مختصات، کپی و دکمه‌های ناوبری به نقشه
         CustomMapFeatures().add_to(m)
         
-        # ۱. بارگذاری و نمایش مجزای لایه‌های PFZ, SST, Chlorophyll-a با تبدیل Base64
+        # لایه‌های حرارتی (برای ادمین و کاربران در صورت وجود استیت ذخیره‌شده)
         if st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
-                
-                # (الف) لایه PFZ
+                # PFZ
                 if nc_out and os.path.exists(nc_out):
                     try:
                         with xr.open_dataset(nc_out) as ds_pfz:
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
-                            
                             img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ", reg_name, "jet", output_dir)
                             if img_path and bounds and os.path.exists(img_path):
                                 encoded_img = image_to_base64(img_path)
                                 if encoded_img:
-                                    folium.raster_layers.ImageOverlay(
-                                        image=encoded_img,
-                                        bounds=bounds,
-                                        opacity=0.65,
-                                        name=f"PFZ ({reg_name})",
-                                        show=True
-                                    ).add_to(m)
-                    except Exception as pfz_ex:
-                        record_error(f"خطا در ایجاد لایه PFZ منطقه {reg_name}", pfz_ex)
+                                    folium.raster_layers.ImageOverlay(image=encoded_img, bounds=bounds, opacity=0.65, name=f"PFZ ({reg_name})", show=True).add_to(m)
+                    except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
 
-                # (ب) لایه SST
+                # SST
                 if st.session_state.sst_nc_path:
                     try:
                         da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
@@ -778,17 +738,10 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path_sst and bounds_sst and os.path.exists(img_path_sst):
                                 encoded_img_sst = image_to_base64(img_path_sst)
                                 if encoded_img_sst:
-                                    folium.raster_layers.ImageOverlay(
-                                        image=encoded_img_sst,
-                                        bounds=bounds_sst,
-                                        opacity=0.65,
-                                        name=f"SST ({reg_name})",
-                                        show=False
-                                    ).add_to(m)
-                    except Exception as sst_ex:
-                        record_error(f"خطا در ایجاد لایه SST منطقه {reg_name}", sst_ex)
+                                    folium.raster_layers.ImageOverlay(image=encoded_img_sst, bounds=bounds_sst, opacity=0.65, name=f"SST ({reg_name})", show=False).add_to(m)
+                    except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
 
-                # (ج) لایه Chlorophyll-a
+                # Chlorophyll-a
                 if st.session_state.chl_nc_path:
                     try:
                         da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
@@ -797,37 +750,27 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path_chl and bounds_chl and os.path.exists(img_path_chl):
                                 encoded_img_chl = image_to_base64(img_path_chl)
                                 if encoded_img_chl:
-                                    folium.raster_layers.ImageOverlay(
-                                        image=encoded_img_chl,
-                                        bounds=bounds_chl,
-                                        opacity=0.65,
-                                        name=f"Chlorophyll-a ({reg_name})",
-                                        show=False
-                                    ).add_to(m)
-                    except Exception as chl_ex:
-                        record_error(f"خطا در ایجاد لایه Chlorophyll-a منطقه {reg_name}", chl_ex)
+                                    folium.raster_layers.ImageOverlay(image=encoded_img_chl, bounds=bounds_chl, opacity=0.65, name=f"Chlorophyll-a ({reg_name})", show=False).add_to(m)
+                    except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
 
-        # ۲. رسم مرز مناطق
+        # رسم مرز مناطق
         folium.GeoJson(
             st.session_state.combined_region_gdf,
-            name="Region Boundaries",
+            name="محدوده مناطق (Regions)",
             style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
         ).add_to(m)
         
-        # ۳. رسم خطوط جبهه‌ها
+        # رسم خطوط جبهه‌ها
         if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
             folium.GeoJson(
                 st.session_state.combined_fronts_gdf,
-                name="PFZ Front Lines",
+                name="خطوط جبهه صیادی (Fronts)",
                 style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0}
             ).add_to(m)
-            st.success(f"🎯 تعداد {len(st.session_state.combined_fronts_gdf)} جبهه صیادی در مجموع مناطق استخراج و رسم شد.")
 
-        # ۴. کادر شناور روی نقشه با تاریخ شمسی و میلادی
+        # کادر شناور تاریخ روی نقشه
         if greg_str and jalali_str:
-            persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
-            jalali_str_fa = jalali_str.translate(persian_digits)
-            
+            jalali_str_fa = jalali_str.translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))
             date_box_html = f'''
                 <div style="position: fixed; 
                             bottom: 25px; left: 20px; width: 250px; height: 50px; 
@@ -842,11 +785,15 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             m.get_root().html.add_child(folium.Element(date_box_html))
 
         m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
-        folium.LayerControl().add_to(m)
+        folium.LayerControl(position='topright').add_to(m)
         
-        # نمایش نهایی نقشه
         st_folium(m, width=1100, height=600)
 
     except Exception as map_render_err:
         st.error("⚠️ خطا در پردازش و رندر نقشه:")
         st.exception(map_render_err)
+else:
+    if st.session_state.role != 'admin':
+        st.warning("⚠️ هنوز هیچ دیتایی توسط مدیر سیستم پردازش و ذخیره نشده است. لطفاً از ادمین بخواهید تا تحلیل را اجرا کند.")
+    else:
+        st.info("👈 برای شروع، از منوی تنظیمات کناری، فرآیند پردازش را اجرا کنید.")
