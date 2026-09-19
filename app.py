@@ -1,8 +1,7 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application for Multi-Region Ocean PFZ mapping with Google Auth, Admin (k1_kabiri), Advanced Map Popups, DDM, and State Persistence.
+# Description: Streamlit WebGIS application with Google Auth, Admin Login Security, User Activity Logging, Map Date Display, and Layer Controls.
 
 import os
-# غیرفعال کردن قفل فایل‌های NetCDF/HDF5 برای جلوگیری از خطای Resource temporarily unavailable (Errno 11)
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
 
 import sys
@@ -15,6 +14,7 @@ import base64
 import json
 import sqlite3
 import hashlib
+import datetime
 import pandas as pd
 import streamlit as st
 import geopandas as gpd
@@ -38,7 +38,7 @@ plt.switch_backend('Agg')
 st.set_page_config(page_title="سامانه مدیریت PFZ 🐟", page_icon="🐟", layout="wide")
 
 # ==========================================
-# ۰. سیستم پایگاه داده و احراز هویت (Auth)
+# ۰. سیستم پایگاه داده، لاگ کاربران و احراز هویت
 # ==========================================
 DB_PATH = "users.db"
 output_dir = os.path.join(tempfile.gettempdir(), "Data_Processed")
@@ -51,15 +51,23 @@ REGIONS_FILE = os.path.join(output_dir, "latest_regions.geojson")
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # بررسی وجود ستون oauth_provider در جدول در صورت آپدیت دیتابیس قدیمی
     c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, oauth_provider TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS user_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, action TEXT, timestamp TEXT)''')
     
-    # ساخت کاربر ادمین پیش‌فرض با مشخصات جدید k1_kabiri
+    # ساخت کاربر ادمین پیش‌فرض
     c.execute("SELECT * FROM users WHERE username='k1_kabiri'")
     if not c.fetchone():
         hashed_pw = hashlib.sha256('Keivan@010976'.encode()).hexdigest()
         c.execute("INSERT INTO users (username, password, role, oauth_provider) VALUES (?, ?, ?, ?)", ('k1_kabiri', hashed_pw, 'admin', 'local'))
     
+    conn.commit()
+    conn.close()
+
+def log_user_activity(username, action):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("INSERT INTO user_logs (username, action, timestamp) VALUES (?, ?, ?)", (username, action, dt_str))
     conn.commit()
     conn.close()
 
@@ -83,7 +91,7 @@ def authenticate_user(username, password):
     user = c.fetchone()
     conn.close()
     if user and user[0] == hashlib.sha256(password.encode()).hexdigest():
-        return user[1] # بازگرداندن نقش (Role)
+        return user[1]
     return None
 
 def login_or_register_google_user(email):
@@ -107,7 +115,7 @@ if "logged_in" not in st.session_state:
     st.session_state.role = ""
 
 # ==========================================
-# ذخیره و بازیابی آخرین وضعیت نقشه (اشتراک‌گذاری بین کاربران)
+# ذخیره و بازیابی آخرین وضعیت نقشه
 # ==========================================
 def save_shared_state():
     if st.session_state.combined_fronts_gdf is not None:
@@ -151,9 +159,6 @@ def load_shared_state():
         except Exception as e:
             record_error("خطا در بارگذاری آخرین وضعیت نقشه", e)
 
-# ==========================================
-# ۱. تابع تبدیل تصویر به Base64
-# ==========================================
 def image_to_base64(path):
     try:
         with open(path, "rb") as f:
@@ -163,14 +168,12 @@ def image_to_base64(path):
         return None
 
 # ==========================================
-# ۲. کلاس کنترل سفارشی نقشه (مختصات DDM، کپی، Open With)
+# کلاس کنترل سفارشی نقشه (مختصات DDM، کپی، Open With)
 # ==========================================
 class CustomMapFeatures(MacroElement):
     _template = Template("""
     {% macro script(this, kwargs) %}
-    
     var map = {{ this._parent.get_name() }};
-    
     let useDDM = false;
     let lastLatLng = null;
     let currentMarker = null;
@@ -186,7 +189,6 @@ class CustomMapFeatures(MacroElement):
     function updateCoordDisplay(latlng) {
       const displayElement = document.getElementById('coord-text');
       if (!displayElement || !latlng) return;
-
       if (useDDM) {
         displayElement.innerHTML = `${toDDM(latlng.lat, true)} | ${toDDM(latlng.lng, false)}`;
       } else {
@@ -195,7 +197,6 @@ class CustomMapFeatures(MacroElement):
     }
 
     const coordControl = L.control({ position: 'bottomright' });
-
     coordControl.onAdd = function (map) {
       const div = L.DomUtil.create('div', 'coord-box');
       div.style.padding = '8px 12px';
@@ -218,9 +219,7 @@ class CustomMapFeatures(MacroElement):
           border: 1px solid #007bff; background: #007bff; color: white; border-radius: 4px;
         ">DDM</button>
       `;
-
       L.DomEvent.disableClickPropagation(div);
-
       setTimeout(() => {
         const btnEl = document.getElementById('toggle-coord-btn');
         if (btnEl) {
@@ -231,10 +230,8 @@ class CustomMapFeatures(MacroElement):
           });
         }
       }, 100);
-
       return div;
     };
-
     coordControl.addTo(map);
 
     map.on('mousemove', function (e) {
@@ -253,7 +250,6 @@ class CustomMapFeatures(MacroElement):
       const latDDM = toDDM(latlng.lat, true);
       const lngDDM = toDDM(latlng.lng, false);
       const copyText = latDDM + '  |  ' + lngDDM;
-      
       const latFixed = latlng.lat.toFixed(5);
       const lngFixed = latlng.lng.toFixed(5);
 
@@ -265,29 +261,13 @@ class CustomMapFeatures(MacroElement):
         <div style="direction:ltr; text-align:center; font-family:monospace; font-size:12px; font-weight:bold; color:#1E3A8A; min-width:230px; padding: 2px;">
           <div style="margin-bottom:6px;">${latDDM}<br>${lngDDM}</div>
           <input type="text" id="coord-input-box" value="${copyText}" readonly style="width: 100%; text-align: center; font-family: monospace; font-size: 11px; padding: 4px; margin-bottom: 6px; border: 1px solid #007bff; border-radius: 4px; background: #f0f4f8; color: #333;" />
-          
-          <button id="popup-copy-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #007bff; color: white; border-radius: 4px; width: 100%; font-weight:bold; margin-bottom: 5px;">
-            📋 کپی کُد مختصات (Copy)
-          </button>
-
-          <button id="popup-share-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #6c757d; color: white; border-radius: 4px; font-weight: bold; text-align: center; width: 100%; margin-bottom: 5px;">
-            🔀 انتخاب نرم‌افزار (Open With)
-          </button>
-
-          <a href="${gmapsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #4285F4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
-            📍 باز کردن در گوگل مپ
-          </a>
-
-          <a href="${openSeaMapUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #007791; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">
-            🌐 باز کردن در OpenSeaMap
-          </a>
-
-          <a href="${windyUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #1B65B4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center;">
-            🌊 باز کردن در Windy
-          </a>
+          <button id="popup-copy-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #007bff; color: white; border-radius: 4px; width: 100%; font-weight:bold; margin-bottom: 5px;">📋 کپی کُد مختصات (Copy)</button>
+          <button id="popup-share-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #6c757d; color: white; border-radius: 4px; font-weight: bold; text-align: center; width: 100%; margin-bottom: 5px;">🔀 انتخاب نرم‌افزار (Open With)</button>
+          <a href="${gmapsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #4285F4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">📍 باز کردن در گوگل مپ</a>
+          <a href="${openSeaMapUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #007791; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">🌐 باز کردن در OpenSeaMap</a>
+          <a href="${windyUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #1B65B4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center;">🌊 باز کردن در Windy</a>
         </div>
       `;
-      
       currentMarker.bindPopup(popupHtml).openPopup();
       lastLatLng = latlng;
       updateCoordDisplay(latlng);
@@ -296,59 +276,26 @@ class CustomMapFeatures(MacroElement):
         const copyBtn = document.getElementById('popup-copy-btn');
         const shareBtn = document.getElementById('popup-share-btn');
         const inputBox = document.getElementById('coord-input-box');
-        
         if (copyBtn && inputBox) {
           L.DomEvent.disableClickPropagation(copyBtn);
           L.DomEvent.disableClickPropagation(inputBox);
-
-          const doCopy = function() {
+          copyBtn.addEventListener('click', function() {
             inputBox.select();
-            inputBox.setSelectionRange(0, 99999);
             try {
-              var successful = document.execCommand('copy');
-              if (successful) {
-                copyBtn.innerText = 'کپی شد! (Copied)';
-                copyBtn.style.background = '#17a2b8';
-                setTimeout(() => {
-                  copyBtn.innerText = '📋 کپی کُد مختصات (Copy)';
-                  copyBtn.style.background = '#007bff';
-                }, 2000);
-              } else {
-                throw new Error("ExecCommand failed");
-              }
+              document.execCommand('copy');
+              copyBtn.innerText = 'کپی شد! (Copied)';
+              copyBtn.style.background = '#17a2b8';
+              setTimeout(() => { copyBtn.innerText = '📋 کپی کُد مختصات (Copy)'; copyBtn.style.background = '#007bff'; }, 2000);
             } catch (err) {
-              if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(copyText).then(() => {
-                  copyBtn.innerText = 'کپی شد! (Copied)';
-                  copyBtn.style.background = '#17a2b8';
-                  setTimeout(() => {
-                    copyBtn.innerText = '📋 کپی کُد مختصات (Copy)';
-                    copyBtn.style.background = '#007bff';
-                  }, 2000);
-                }).catch(() => {
-                  copyBtn.innerText = 'متن انتخاب شد (Ctrl+C)';
-                });
-              } else {
-                copyBtn.innerText = 'متن انتخاب شد (Ctrl+C)';
-              }
+              copyBtn.innerText = 'متن انتخاب شد (Ctrl+C)';
             }
-          };
-
-          copyBtn.addEventListener('click', doCopy);
-          inputBox.addEventListener('click', function() {
-            inputBox.select();
           });
         }
-
         if (shareBtn) {
           L.DomEvent.disableClickPropagation(shareBtn);
           shareBtn.addEventListener('click', () => {
             if (navigator.share) {
-              navigator.share({
-                title: 'مختصات نقطه صیادی PFZ',
-                text: copyText,
-                url: gmapsUrl
-              }).catch(() => {});
+              navigator.share({ title: 'مختصات نقطه صیادی PFZ', text: copyText, url: gmapsUrl }).catch(() => {});
             } else {
               window.open(gmapsUrl, '_blank');
             }
@@ -356,41 +303,21 @@ class CustomMapFeatures(MacroElement):
         }
       }, 150);
     });
-
     {% endmacro %}
     """)
     def __init__(self):
         super().__init__()
 
-# استایل‌های RTL و فونت Vazirmatn
 st.markdown("""
     <style>
     @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
-    
-    .stApp, [data-testid="stSidebar"] {
-        direction: rtl;
-        text-align: right;
-    }
-
-    p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input {
-        font-family: 'Vazirmatn', sans-serif;
-    }
-
-    .main-title {
-        font-size: 2.0rem !important;
-        color: #1E3A8A;
-        font-weight: bold;
-        margin-bottom: 1rem;
-        text-align: right !important;
-    }
-    
-    .stMarkdown, .stSelectbox, .stSlider {
-        text-align: right;
-    }
+    .stApp, [data-testid="stSidebar"] { direction: rtl; text-align: right; }
+    p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input { font-family: 'Vazirmatn', sans-serif; }
+    .main-title { font-size: 2.0rem !important; color: #1E3A8A; font-weight: bold; margin-bottom: 1rem; text-align: right !important; }
+    .stMarkdown, .stSelectbox, .stSlider { text-align: right; }
     </style>
 """, unsafe_allow_html=True)
 
-# تنظیمات لایک‌گر (کاهش لاگ‌های اضافی)
 logging.basicConfig(level=logging.WARNING, format='[%(asctime)s] %(levelname)s: %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
 
 def gregorian_to_jalali(gy, gm, gd):
@@ -437,15 +364,13 @@ def log_process(msg_type, msg_text, status_obj=None):
     if status_obj: status_obj.write(msg_text)
 
 # ==========================================
-# صفحه ورود و ثبت‌نام (شامل ورود با گوگل)
+# صفحه ورود و ثبت‌نام (بدون نمایش اطلاعات ادمین)
 # ==========================================
 if not st.session_state.logged_in:
     st.markdown('<div class="main-title">🌊 ورود به سامانه هوشمند مناطق مستعد صید (PFZ)</div>', unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.info("💡 **راهنمای ورود:**\n- نام کاربری ادمین: `k1_kabiri`\n- رمز عبور ادمین: `Keivan@010976`")
-        
         tab1, tab2, tab3 = st.tabs(["🔐 ورود به سیستم", "📝 ثبت‌نام", "🌐 ورود با گوگل"])
         
         with tab1:
@@ -460,6 +385,7 @@ if not st.session_state.logged_in:
                         st.session_state.logged_in = True
                         st.session_state.username = login_user
                         st.session_state.role = role
+                        log_user_activity(login_user, "LOGIN")
                         st.success(f"خوش آمدید {login_user}!")
                         st.rerun()
                     else:
@@ -484,7 +410,6 @@ if not st.session_state.logged_in:
 
         with tab3:
             st.markdown("### ورود سریع با اکانت گوگل (Google Sign-In)")
-            st.caption("با وارد کردن ایمیل گوگل خود می‌توانید به عنوان کاربر عادی وارد سامانه شوید.")
             with st.form("google_login_form"):
                 google_email = st.text_input("📧 ایمیل گوگل (Gmail Address)")
                 submit_google = st.form_submit_button("تایید و ورود با گوگل", use_container_width=True)
@@ -495,6 +420,7 @@ if not st.session_state.logged_in:
                         st.session_state.logged_in = True
                         st.session_state.username = google_email
                         st.session_state.role = role
+                        log_user_activity(google_email, "LOGIN (Google)")
                         st.success(f"ورود موفق با ایمیل گوگل: {google_email}")
                         st.rerun()
                     else:
@@ -509,16 +435,32 @@ load_shared_state()
 st.sidebar.markdown(f"### 👤 سلام **{st.session_state.username}**")
 st.sidebar.caption(f"🛡️ سطح دسترسی: **{'مدیر سیستم (Admin)' if st.session_state.role == 'admin' else 'کاربر عادی (User)'}**")
 if st.sidebar.button("🚪 خروج (Logout)", use_container_width=True):
+    log_user_activity(st.session_state.username, "LOGOUT")
     st.session_state.logged_in = False
     st.rerun()
 
 st.sidebar.markdown("---")
 st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ) 🐟</div>', unsafe_allow_html=True)
 
+# ==========================================
+# بخش گزارش‌دهی ورود و خروج کاربران برای ادمین
+# ==========================================
+if st.session_state.role == 'admin':
+    with st.expander("📊 گزارش ورود و خروج کاربران سیستم (Activity Logs)", expanded=False):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            logs_df = pd.read_sql_query("SELECT username AS 'نام کاربری', action AS 'عملیات', timestamp AS 'زمان' FROM user_logs ORDER BY id DESC LIMIT 50", conn)
+            conn.close()
+            if not logs_df.empty:
+                st.dataframe(logs_df, use_container_width=True)
+            else:
+                st.info("هنوز گزارشی ثبت نشده است.")
+        except Exception as e:
+            st.error(f"خطا در خواندن لاگ کاربران: {e}")
+
 DEFAULT_SHAPES_PATH = "default_shapes.zip"
 region_configs = {}
 
-# تنظیمات ادمین برای آپلود و پردازش
 if st.session_state.role == 'admin':
     st.sidebar.header("⚙️ تنظیمات پردازش و مدل")
     uploaded_shapefile_zip = st.sidebar.file_uploader("آپلود فایل شیپ‌فایل مناطق (.zip) - اختیاری", type="zip")
@@ -597,7 +539,6 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
             gdf_fronts['Threshold'] = active_threshold
             gdf_fronts['Length_km'] = gdf_fronts.to_crs("EPSG:3857").geometry.length / 1000
             return gdf_fronts[gdf_fronts['Length_km'] > 0.5] if not gdf_fronts[gdf_fronts['Length_km'] > 0.5].empty else None
-            
     except Exception as ex: record_error(f"خطا در استخراج جبهه برای {region_name}", ex)
     return None
 
@@ -709,20 +650,23 @@ if st.session_state.role == 'admin':
                 st.success(text) if msg_type == "success" else st.error(text) if msg_type == "error" else st.info(text)
 
 # ==========================================
-# ۳. رندر نقشه تعاملی با کنترل‌های پیشرفته
+# ۳. رندر نقشه تعاملی و نمایش تاریخ اخذ داده
 # ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
-    st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های نقشه حرارتی (Heatmap)")
+    st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های حرارتی (Heatmaps)")
     
-    if st.session_state.role != 'admin':
-        st.info("🔹 شما به عنوان **کاربر** وارد شده‌اید. می‌توانید روی نقشه کلیک کنید تا مختصات دقیق را به صورت DD یا DDM کپی کرده یا در گوگل‌مپ، Windy و OpenSeaMap باز کنید.")
-    
-    try:
-        greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
-        if greg_str and jalali_str:
-            jalali_str_fa = jalali_str.translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))
-            st.success(f"📅 **تاریخ اخذ داده:** `{jalali_str_fa}` | **Data Acquisition Date:** `{greg_str}`")
+    # نمایش تاریخ اخذ داده به شمسی و میلادی در بالای نقشه
+    greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
+    if greg_str and jalali_str:
+        jalali_str_fa = jalali_str.translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))
+        st.markdown(f"""
+            <div style="background: #eef2f7; padding: 10px 15px; border-radius: 8px; border-left: 5px solid #1E3A8A; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; direction: ltr;">
+                <span style="font-family: monospace; font-weight: bold; color: #1E3A8A; font-size: 14px;">Acquisition Date (Gregorian): {greg_str}</span>
+                <span style="font-family: 'Vazirmatn', sans-serif; font-weight: bold; color: #1E3A8A; font-size: 14px;">تاریخ اخذ داده (شمسی): {jalali_str_fa}</span>
+            </div>
+        """, unsafe_allow_html=True)
 
+    try:
         m = folium.Map(
             location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
             zoom_start=6, 
@@ -734,12 +678,11 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google Hybrid', name='نقشه ترکیبی گوگل (Hybrid)', overlay=False, control=True).add_to(m)
         folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attr='Esri Topo', name='توپوگرافی (Esri Topo)', overlay=False, control=True).add_to(m)
 
-        # تزریق ابزارهای مختصات DDM و کپی
         CustomMapFeatures().add_to(m)
         
         if st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
-                # PFZ
+                # PFZ Layer
                 if nc_out and os.path.exists(nc_out):
                     try:
                         with xr.open_dataset(nc_out) as ds_pfz:
@@ -749,10 +692,10 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path and bounds and os.path.exists(img_path):
                                 encoded_img = image_to_base64(img_path)
                                 if encoded_img:
-                                    folium.raster_layers.ImageOverlay(image=encoded_img, bounds=bounds, opacity=0.65, name=f"PFZ ({reg_name})", show=True).add_to(m)
+                                    folium.raster_layers.ImageOverlay(image=encoded_img, bounds=bounds, opacity=0.65, name=f"PFZ Index ({reg_name})", show=True).add_to(m)
                     except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
 
-                # SST
+                # SST Layer (دما) - قابل مشاهده و روشن/خاموش کردن توسط ادمین و کاربران
                 if st.session_state.sst_nc_path:
                     try:
                         da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
@@ -761,10 +704,10 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path_sst and bounds_sst and os.path.exists(img_path_sst):
                                 encoded_img_sst = image_to_base64(img_path_sst)
                                 if encoded_img_sst:
-                                    folium.raster_layers.ImageOverlay(image=encoded_img_sst, bounds=bounds_sst, opacity=0.65, name=f"SST ({reg_name})", show=False).add_to(m)
+                                    folium.raster_layers.ImageOverlay(image=encoded_img_sst, bounds=bounds_sst, opacity=0.65, name=f"SST - دمای سطح دریا ({reg_name})", show=True).add_to(m)
                     except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
 
-                # Chlorophyll-a
+                # Chlorophyll-a Layer (کلروفیل) - قابل مشاهده و روشن/خاموش کردن توسط ادمین و کاربران
                 if st.session_state.chl_nc_path:
                     try:
                         da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
@@ -773,7 +716,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path_chl and bounds_chl and os.path.exists(img_path_chl):
                                 encoded_img_chl = image_to_base64(img_path_chl)
                                 if encoded_img_chl:
-                                    folium.raster_layers.ImageOverlay(image=encoded_img_chl, bounds=bounds_chl, opacity=0.65, name=f"Chlorophyll-a ({reg_name})", show=False).add_to(m)
+                                    folium.raster_layers.ImageOverlay(image=encoded_img_chl, bounds=bounds_chl, opacity=0.65, name=f"Chlorophyll-a ({reg_name})", show=True).add_to(m)
                     except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
 
         # رسم مرز مناطق
@@ -792,7 +735,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             ).add_to(m)
 
         m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
-        folium.LayerControl(position='topright').add_to(m)
+        folium.LayerControl(position='topright', collapsed=False).add_to(m)
         
         st_folium(m, width=1100, height=600)
 
