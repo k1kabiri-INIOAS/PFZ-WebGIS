@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with Google Auth, Admin Login Security, User Activity Logging, Floating Date Box, and Layer Access Control.
+# Description: Streamlit WebGIS application with Google Auth, Admin Login Security, User Activity Logging, Floating Date Box, Layer Access Control, and Fullscreen.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -22,6 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 import folium
+from folium.plugins import Fullscreen
 from shapely.geometry import LineString
 from streamlit_folium import st_folium
 import scipy.ndimage as ndimage
@@ -664,7 +665,6 @@ if st.session_state.role == 'admin':
 # ۳. رندر نقشه تعاملی و لایه‌بندی‌ها بر اساس نقش کاربر
 # ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
-    # راست‌چین کردن عنوان نقشه با تگ HTML
     st.markdown('<h3 style="text-align: right; color: #1E3A8A; font-weight: bold; margin-top: 1rem;">🗺️ نقشه تعاملی خطوط جبهه و لایه‌های پایه</h3>', unsafe_allow_html=True)
 
     try:
@@ -681,6 +681,14 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attr='Esri Topo', name='توپوگرافی (Esri Topo)', overlay=False, control=True, show=False).add_to(m)
 
         CustomMapFeatures().add_to(m)
+        
+        # افزودن دکمه تمام‌صفحه (Fullscreen) به نقشه
+        Fullscreen(
+            position="topright",
+            title="حالت تمام‌صفحه (Fullscreen)",
+            title_cancel="خروج از حالت تمام‌صفحه",
+            force_separate_button=True
+        ).add_to(m)
         
         # لایه خطوط جبهه صیادی (برای همه کاربران - فعال به طور پیش‌فرض)
         if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
@@ -759,7 +767,9 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             m.get_root().html.add_child(folium.Element(date_box_html))
 
         m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
-        folium.LayerControl(position='topright', collapsed=False).add_to(m)
+        
+        # تنظیم LayerControl به حالت collapsed=True تا به شکل آیکون جمع‌شونده در بیاید
+        folium.LayerControl(position='topright', collapsed=True).add_to(m)
         
         st_folium(m, width=1100, height=600)
 
