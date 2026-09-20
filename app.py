@@ -113,6 +113,19 @@ if "logged_in" not in st.session_state:
     st.session_state.role = ""
 
 # ==========================================
+# مدیریت محدودسازی ابزارهای هدر برای کاربران عادی
+# ==========================================
+if st.session_state.logged_in and st.session_state.role != 'admin':
+    st.markdown("""
+        <style>
+        /* مخفی کردن دکمه‌های اشتراک‌گذاری، گیت‌هاب و دپلوی برای کاربران عادی */
+        .stDeployButton {display: none !important;}
+        [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+        header [data-testid="baseButton-header"] {display: none !important;}
+        </style>
+    """, unsafe_allow_html=True)
+
+# ==========================================
 # ذخیره و بازیابی آخرین وضعیت نقشه
 # ==========================================
 def save_shared_state():
@@ -362,7 +375,7 @@ def log_process(msg_type, msg_text, status_obj=None):
     if status_obj: status_obj.write(msg_text)
 
 # ==========================================
-# صفحه ورود و ثبت‌نام (بدون نمایش اطلاعات ادمین)
+# صفحه ورود و ثبت‌نام
 # ==========================================
 if not st.session_state.logged_in:
     st.markdown('<div class="main-title">🌊 ورود به سامانه هوشمند مناطق مستعد صید (PFZ)</div>', unsafe_allow_html=True)
@@ -651,7 +664,8 @@ if st.session_state.role == 'admin':
 # ۳. رندر نقشه تعاملی و لایه‌بندی‌ها بر اساس نقش کاربر
 # ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
-    st.subheader("🗺️ نقشه تعاملی خطوط جبهه و لایه‌های پایه")
+    # راست‌چین کردن عنوان نقشه با تگ HTML
+    st.markdown('<h3 style="text-align: right; color: #1E3A8A; font-weight: bold; margin-top: 1rem;">🗺️ نقشه تعاملی خطوط جبهه و لایه‌های پایه</h3>', unsafe_allow_html=True)
 
     try:
         m = folium.Map(
