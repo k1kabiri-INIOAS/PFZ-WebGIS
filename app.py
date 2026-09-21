@@ -51,13 +51,31 @@ REGIONS_FILE = os.path.join(output_dir, "latest_regions.geojson")
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, oauth_provider TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY, 
+        password TEXT, 
+        role TEXT, 
+        oauth_provider TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        phone TEXT,
+        organization TEXT
+    )''')
+    
+    # افزودن ستون‌ها به جدول موجود در صورت نیاز (Migration)
+    for col, col_type in [('first_name', 'TEXT'), ('last_name', 'TEXT'), ('phone', 'TEXT'), ('organization', 'TEXT')]:
+        try:
+            c.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+
     c.execute('''CREATE TABLE IF NOT EXISTS user_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, action TEXT, timestamp TEXT)''')
     
     c.execute("SELECT * FROM users WHERE username='k1_kabiri'")
     if not c.fetchone():
         hashed_pw = hashlib.sha256('Keivan@010976'.encode()).hexdigest()
-        c.execute("INSERT INTO users (username, password, role, oauth_provider) VALUES (?, ?, ?, ?)", ('k1_kabiri', hashed_pw, 'admin', 'local'))
+        c.execute("INSERT INTO users (username, password, role, oauth_provider, first_name, last_name) VALUES (?, ?, ?, ?, ?, ?)", 
+                  ('k1_kabiri', hashed_pw, 'admin', 'local', 'کیسان', 'کبیری'))
     
     conn.commit()
     conn.close()
@@ -70,16 +88,22 @@ def log_user_activity(username, action):
     conn.commit()
     conn.close()
 
-def create_user(username, password, role='user', provider='local'):
+def create_user(username, password, role='user', provider='local', first_name="", last_name="", phone="", organization=""):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
         hashed_pw = hashlib.sha256(password.encode()).hexdigest() if password else ""
-        c.execute("INSERT INTO users (username, password, role, oauth_provider) VALUES (?, ?, ?, ?)", (username, hashed_pw, role, provider))
+        c.execute("""INSERT INTO users (username, password, role, oauth_provider, first_name, last_name, phone, organization) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", 
+                  (username, hashed_pw, role, provider, first_name, last_name, phone, organization))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
-        return False
+        # اگر کاربر وجود داشت، اطلاعاتش را آپدیت کن
+        c.execute("""UPDATE users SET first_name=?, last_name=?, phone=?, organization=? WHERE username=?""", 
+                  (first_name, last_name, phone, organization, username))
+        conn.commit()
+        return True
     finally:
         conn.close()
 
@@ -93,17 +117,18 @@ def authenticate_user(username, password):
         return user[1]
     return None
 
-def login_or_register_google_user(email):
+def login_or_register_email_user(email, first_name, last_name, phone, organization):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT role FROM users WHERE username=?", (email,))
     user = c.fetchone()
+    conn.close()
     if user:
-        conn.close()
+        # به‌روزرسانی اطلاعات در صورت ورود مجدد
+        create_user(email, "", role=user[0], provider='email', first_name=first_name, last_name=last_name, phone=phone, organization=organization)
         return user[0]
     else:
-        conn.close()
-        create_user(email, "", role='user', provider='google')
+        create_user(email, "", role='user', provider='email', first_name=first_name, last_name=last_name, phone=phone, organization=organization)
         return 'user'
 
 init_db()
@@ -382,7 +407,7 @@ if not st.session_state.logged_in:
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        tab1, tab2, tab3 = st.tabs(["🔐 ورود به سیستم", "📝 ثبت‌نام", "🌐 ورود با گوگل"])
+        tab1, tab2, tab3 = st.tabs(["🔐 ورود به سیستم", "📝 ثبت‌نام", "📧 ورود با ایمیل و مشخصات"])
         
         with tab1:
             with st.form("login_form"):
@@ -420,22 +445,28 @@ if not st.session_state.logged_in:
                         st.error("این نام کاربری از قبل وجود دارد.")
 
         with tab3:
-            st.markdown("### ورود سریع با اکانت گوگل (Google Sign-In)")
-            with st.form("google_login_form"):
-                google_email = st.text_input("📧 ایمیل گوگل (Gmail Address)")
-                submit_google = st.form_submit_button("تایید و ورود با گوگل", use_container_width=True)
+            st.markdown("### ورود سریع با ایمیل و اطلاعات شخصی")
+            with st.form("email_login_form"):
+                email_input = st.text_input("📧 آدرس ایمیل (Email Address)")
+                first_name_input = st.text_input("👤 نام *")
+                last_name_input = st.text_input("👤 نام خانوادگی *")
+                phone_input = st.text_input("📞 شماره تلفن (اختیاری)")
+                org_input = st.text_input("🏢 نام سازمان (اختیاری)")
+                submit_email_login = st.form_submit_button("تایید و ورود به سامانه", use_container_width=True)
                 
-                if submit_google:
-                    if google_email and "@" in google_email:
-                        role = login_or_register_google_user(google_email)
-                        st.session_state.logged_in = True
-                        st.session_state.username = google_email
-                        st.session_state.role = role
-                        log_user_activity(google_email, "LOGIN (Google)")
-                        st.success(f"ورود موفق با ایمیل گوگل: {google_email}")
-                        st.rerun()
-                    else:
+                if submit_email_login:
+                    if not email_input or "@" not in email_input:
                         st.error("لطفا یک آدرس ایمیل معتبر وارد کنید.")
+                    elif not first_name_input.strip() or not last_name_input.strip():
+                        st.error("لطفا فیلدهای اجباری (نام و نام خانوادگی) را پر کنید.")
+                    else:
+                        role = login_or_register_email_user(email_input, first_name_input.strip(), last_name_input.strip(), phone_input.strip(), org_input.strip())
+                        st.session_state.logged_in = True
+                        st.session_state.username = email_input
+                        st.session_state.role = role
+                        log_user_activity(email_input, f"LOGIN (Email: {first_name_input} {last_name_input} - Org: {org_input})")
+                        st.success(f"ورود موفق با ایمیل: {email_input}")
+                        st.rerun()
     st.stop()
 
 # ==========================================
@@ -454,20 +485,35 @@ st.sidebar.markdown("---")
 st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ) 🐟</div>', unsafe_allow_html=True)
 
 # ==========================================
-# بخش گزارش‌دهی ورود و خروج کاربران برای ادمین
+# بخش گزارش‌دهی ورود و خروج کاربران و مشخصات برای ادمین
 # ==========================================
 if st.session_state.role == 'admin':
-    with st.expander("📊 گزارش ورود و خروج کاربران سیستم (Activity Logs)", expanded=False):
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            logs_df = pd.read_sql_query("SELECT username AS 'نام کاربری', action AS 'عملیات', timestamp AS 'زمان' FROM user_logs ORDER BY id DESC LIMIT 50", conn)
-            conn.close()
-            if not logs_df.empty:
-                st.dataframe(logs_df, use_container_width=True)
-            else:
-                st.info("هنوز گزارشی ثبت نشده است.")
-        except Exception as e:
-            st.error(f"خطا در خواندن لاگ کاربران: {e}")
+    with st.expander("📊 گزارش ورود و خروج کاربران و اطلاعات ثبت‌نامی", expanded=False):
+        tab_log1, tab_log2 = st.tabs(["📝 لاگ فعالیت‌ها", "👥 لیست کاربران ثبت‌نام‌شده"])
+        
+        with tab_log1:
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                logs_df = pd.read_sql_query("SELECT username AS 'نام کاربری/ایمیل', action AS 'عملیات', timestamp AS 'زمان' FROM user_logs ORDER BY id DESC LIMIT 50", conn)
+                conn.close()
+                if not logs_df.empty:
+                    st.dataframe(logs_df, use_container_width=True)
+                else:
+                    st.info("هنوز گزارشی ثبت نشده است.")
+            except Exception as e:
+                st.error(f"خطا در خواندن لاگ کاربران: {e}")
+                
+        with tab_log2:
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                users_df = pd.read_sql_query("SELECT username AS 'ایمیل/نام‌کاربری', first_name AS 'نام', last_name AS 'نام خانوادگی', phone AS 'تلفن', organization AS 'سازمان', role AS 'نقش' FROM users", conn)
+                conn.close()
+                if not users_df.empty:
+                    st.dataframe(users_df, use_container_width=True)
+                else:
+                    st.info("کاربری ثبت نشده است.")
+            except Exception as e:
+                st.error(f"خطا در خواندن لیست کاربران: {e}")
 
 DEFAULT_SHAPES_PATH = "default_shapes.zip"
 region_configs = {}
@@ -614,7 +660,6 @@ if st.session_state.role == 'admin':
                     combined_region_gdf = gpd.GeoDataFrame(pd.concat(all_gdfs, ignore_index=True), crs="EPSG:4326")
                     minx, miny, maxx, maxy = combined_region_gdf.total_bounds
 
-                    # بروزرسانی پیام گزارش با نام سرور (کوپرنیکوس / Copernicus Marine)
                     log_process("info", "در حال دریافت داده‌های SST و CHL از سرور کوپرنیکوس (Copernicus Marine)...", status)
                     sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
 
@@ -674,7 +719,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             tiles=None
         )
         
-        # نقشه‌های پایه (برای همه کاربران)
         folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)', show=True).add_to(m)
         folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='تصاویر ماهواره‌ای گوگل (Satellite)', overlay=False, control=True, show=False).add_to(m)
         folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google Hybrid', name='نقشه ترکیبی گوگل (Hybrid)', overlay=False, control=True, show=False).add_to(m)
@@ -682,7 +726,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
 
         CustomMapFeatures().add_to(m)
         
-        # افزودن دکمه تمام‌صفحه (Fullscreen) به نقشه
         Fullscreen(
             position="topright",
             title="حالت تمام‌صفحه (Fullscreen)",
@@ -690,7 +733,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             force_separate_button=True
         ).add_to(m)
         
-        # لایه خطوط جبهه صیادی (برای همه کاربران - فعال به طور پیش‌فرض)
         if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
             fronts_fg = folium.FeatureGroup(name="خطوط جبهه صیادی (Fronts)", show=True)
             folium.GeoJson(
@@ -699,10 +741,8 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             ).add_to(fronts_fg)
             fronts_fg.add_to(m)
 
-        # لایه‌های تحلیلی اختصاصی مدیر سیستم (فقط ادمین می‌بیند و به طور پیش‌فرض خاموش هستند)
         if st.session_state.role == 'admin' and st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
-                # PFZ Layer (show=False)
                 if nc_out and os.path.exists(nc_out):
                     try:
                         with xr.open_dataset(nc_out) as ds_pfz:
@@ -715,7 +755,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                                     folium.raster_layers.ImageOverlay(image=encoded_img, bounds=bounds, opacity=0.65, name=f"PFZ Index ({reg_name})", show=False).add_to(m)
                     except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
 
-                # SST Layer (show=False)
                 if st.session_state.sst_nc_path:
                     try:
                         da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
@@ -727,7 +766,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                                     folium.raster_layers.ImageOverlay(image=encoded_img_sst, bounds=bounds_sst, opacity=0.65, name=f"SST - دمای سطح دریا ({reg_name})", show=False).add_to(m)
                     except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
 
-                # Chlorophyll-a Layer (show=False)
                 if st.session_state.chl_nc_path:
                     try:
                         da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
@@ -739,7 +777,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                                     folium.raster_layers.ImageOverlay(image=encoded_img_chl, bounds=bounds_chl, opacity=0.65, name=f"Chlorophyll-a ({reg_name})", show=False).add_to(m)
                     except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
 
-            # رسم محدوده مناطق برای ادمین (پیش‌فرض خاموش)
             regions_fg = folium.FeatureGroup(name="محدوده مناطق (Regions)", show=False)
             folium.GeoJson(
                 st.session_state.combined_region_gdf,
@@ -747,7 +784,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             ).add_to(regions_fg)
             regions_fg.add_to(m)
 
-        # ۴. کادر شناور روی نقشه با تاریخ شمسی و میلادی
         greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
         if greg_str and jalali_str:
             persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
@@ -768,7 +804,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
 
         m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
         
-        # تنظیم LayerControl به حالت collapsed=True
         folium.LayerControl(position='topright', collapsed=True).add_to(m)
         
         st_folium(m, width=1100, height=600)
