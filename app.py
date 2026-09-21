@@ -119,7 +119,6 @@ if "logged_in" not in st.session_state:
 if st.session_state.logged_in and st.session_state.role != 'admin':
     st.markdown("""
         <style>
-        /* مخفی کردن دکمه‌های اشتراک‌گذاری، گیت‌هاب و دپلوی برای کاربران عادی */
         .stDeployButton {display: none !important;}
         [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
         header [data-testid="baseButton-header"] {display: none !important;}
@@ -180,7 +179,7 @@ def image_to_base64(path):
         return None
 
 # ==========================================
-# کلاس کنترل سفارشی نقشه (مختصات DDM، کپی، Open With)
+# کلاس کنترل سفارشی نقشه (مختصات DDM، کپی، Share With)
 # ==========================================
 class CustomMapFeatures(MacroElement):
     _template = Template("""
@@ -274,7 +273,7 @@ class CustomMapFeatures(MacroElement):
           <div style="margin-bottom:6px;">${latDDM}<br>${lngDDM}</div>
           <input type="text" id="coord-input-box" value="${copyText}" readonly style="width: 100%; text-align: center; font-family: monospace; font-size: 11px; padding: 4px; margin-bottom: 6px; border: 1px solid #007bff; border-radius: 4px; background: #f0f4f8; color: #333;" />
           <button id="popup-copy-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #007bff; color: white; border-radius: 4px; width: 100%; font-weight:bold; margin-bottom: 5px;">📋 کپی کُد مختصات (Copy)</button>
-          <button id="popup-share-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #6c757d; color: white; border-radius: 4px; font-weight: bold; text-align: center; width: 100%; margin-bottom: 5px;">🔀 انتخاب نرم‌افزار (Open With)</button>
+          <button id="popup-share-btn" style="cursor: pointer; padding: 5px 8px; font-size: 11px; border: none; background: #6c757d; color: white; border-radius: 4px; font-weight: bold; text-align: center; width: 100%; margin-bottom: 5px;">🔀 اشتراک‌گذاری مختصات (Share With)</button>
           <a href="${gmapsUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #4285F4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">📍 باز کردن در گوگل مپ</a>
           <a href="${openSeaMapUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #007791; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; margin-bottom: 4px;">🌐 باز کردن در OpenSeaMap</a>
           <a href="${windyUrl}" target="_blank" style="display: block; padding: 5px 8px; font-size: 11px; background: #1B65B4; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center;">🌊 باز کردن در Windy</a>
@@ -615,11 +614,12 @@ if st.session_state.role == 'admin':
                     combined_region_gdf = gpd.GeoDataFrame(pd.concat(all_gdfs, ignore_index=True), crs="EPSG:4326")
                     minx, miny, maxx, maxy = combined_region_gdf.total_bounds
 
-                    log_process("info", "در حال دریافت داده‌های SST و CHL از سرور...", status)
+                    # بروزرسانی پیام گزارش با نام سرور (کوپرنیکوس / Copernicus Marine)
+                    log_process("info", "در حال دریافت داده‌های SST و CHL از سرور کوپرنیکوس (Copernicus Marine)...", status)
                     sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(minx, miny, maxx, maxy, output_dir)
 
                     if sst_nc_path and chl_nc_path:
-                        log_process("success", "داده‌های ماهواره‌ای با موفقیت دریافت شدند.", status)
+                        log_process("success", "داده‌های ماهواره‌ای با موفقیت از سرور دریافت شدند.", status)
                         all_front_gdfs, nc_out_list = [], []
 
                         for reg_name, cfg in region_configs.items():
@@ -768,7 +768,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
 
         m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
         
-        # تنظیم LayerControl به حالت collapsed=True تا به شکل آیکون جمع‌شونده در بیاید
+        # تنظیم LayerControl به حالت collapsed=True
         folium.LayerControl(position='topright', collapsed=True).add_to(m)
         
         st_folium(m, width=1100, height=600)
