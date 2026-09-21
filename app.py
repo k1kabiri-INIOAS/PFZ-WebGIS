@@ -35,7 +35,7 @@ from modules.processor import process_pfz_pipeline
 warnings.filterwarnings("ignore")
 plt.switch_backend('Agg')
 
-st.set_page_config(page_title="سامانه مدیریت PFZ 🐟", page_icon="🐟", layout="wide")
+st.set_page_config(page_title="سامانه هوشمند تشخیص مناطق مستعد صیادی (نسخه آزمایشی)", page_icon="🌊", layout="wide")
 
 # ==========================================
 # ۰. سیستم پایگاه داده، لاگ کاربران و احراز هویت
@@ -137,14 +137,18 @@ if "logged_in" not in st.session_state:
     st.session_state.role = ""
 
 # ==========================================
-# مدیریت محدودسازی ابزارهای هدر برای کاربران عادی
+# مدیریت محدودسازی ابزارهای هدر (قبل از لاگین و برای غیر ادمین)
 # ==========================================
-if st.session_state.logged_in and st.session_state.role != 'admin':
+if not (st.session_state.get("logged_in", False) and st.session_state.get("role") == "admin"):
     st.markdown("""
         <style>
         .stDeployButton {display: none !important;}
         [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
         header [data-testid="baseButton-header"] {display: none !important;}
+        #MainMenu {visibility: hidden !important;}
+        header {visibility: hidden !important;}
+        .stAppHeader {display: none !important;}
+        footer {visibility: hidden !important;}
         </style>
     """, unsafe_allow_html=True)
 
@@ -347,7 +351,7 @@ st.markdown("""
     @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
     .stApp, [data-testid="stSidebar"] { direction: rtl; text-align: right; }
     p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input { font-family: 'Vazirmatn', sans-serif; }
-    .main-title { font-size: 2.0rem !important; color: #1E3A8A; font-weight: bold; margin-bottom: 1rem; text-align: right !important; }
+    .main-title { font-size: 1.8rem !important; color: #1E3A8A; font-weight: bold; margin-bottom: 0.5rem; text-align: right !important; }
     .stMarkdown, .stSelectbox, .stSlider { text-align: right; }
     </style>
 """, unsafe_allow_html=True)
@@ -398,11 +402,21 @@ def log_process(msg_type, msg_text, status_obj=None):
     if status_obj: status_obj.write(msg_text)
 
 # ==========================================
-# صفحه ورود (بدون تب ثبت‌نام اضافه)
+# صفحه ورود
 # ==========================================
 if not st.session_state.logged_in:
-    st.markdown('<div class="main-title">🌊 ورود به سامانه هوشمند مناطق مستعد صید (PFZ)</div>', unsafe_allow_html=True)
-    
+    col_logo, col_title = st.columns([1, 6])
+    with col_logo:
+        logo_path = "INIOAS Logo Color-P.jpg"
+        if os.path.exists(logo_path):
+            st.image(logo_path, width=100)
+        else:
+            st.markdown("<h1 style='text-align: center;'>🌊</h1>", unsafe_allow_html=True)
+    with col_title:
+        st.markdown("<h4 style='margin-bottom: 0px; color: #1E3A8A; font-weight: bold;'>پژوهشگاه ملی اقیانوس‌شناسی و علوم جوی</h4>", unsafe_allow_html=True)
+        st.markdown("<h2 style='margin-top: 5px; color: #0F172A; font-weight: bold;'>🌊 ورود به سامانه هوشمند تشخیص مناطق مستعد صید (نسخه آزمایشی)</h2>", unsafe_allow_html=True)
+    st.markdown("---")
+
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         tab1, tab2 = st.tabs(["🔐 ورود به سیستم", "📧 ورود با ایمیل و مشخصات"])
@@ -463,7 +477,21 @@ if st.sidebar.button("🚪 خروج (Logout)", use_container_width=True):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ) 🐟</div>', unsafe_allow_html=True)
+
+# هدر اصلی سامانه به همراه لوگو و عنوان جدید
+col_logo, col_title = st.columns([1, 6])
+with col_logo:
+    logo_path = "INIOAS Logo Color-P.jpg"
+    if os.path.exists(logo_path):
+        st.image(logo_path, width=100)
+    else:
+        st.markdown("<h1 style='text-align: center;'>🌊</h1>", unsafe_allow_html=True)
+
+with col_title:
+    st.markdown("<h4 style='margin-bottom: 0px; color: #1E3A8A; font-weight: bold;'>پژوهشگاه ملی اقیانوس‌شناسی و علوم جوی</h4>", unsafe_allow_html=True)
+    st.markdown("<h2 style='margin-top: 5px; color: #0F172A; font-weight: bold;'>🌊 سامانه هوشمند تشخیص مناطق مستعد صید (نسخه آزمایشی) 🐟</h2>", unsafe_allow_html=True)
+
+st.markdown("---")
 
 # ==========================================
 # بخش گزارش‌دهی ورود و خروج کاربران و مشخصات برای ادمین
@@ -788,6 +816,17 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         folium.LayerControl(position='topright', collapsed=True).add_to(m)
         
         st_folium(m, width=1100, height=600)
+
+        # متن حقوق و کپی‌رایت سامانه در زیر نقشه
+        st.markdown("---")
+        st.markdown(
+            """
+            <div style="text-align: center; color: #4B5563; font-size: 0.9rem; padding: 10px 0; font-weight: bold; font-family: 'Vazirmatn', sans-serif;">
+                کلیه حقوق این سامانه متعلق به <b>پژوهشگاه ملی اقیانوس‌شناسی و علوم جوی</b> می‌باشد.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     except Exception as map_render_err:
         st.error("⚠️ خطا در پردازش و رندر نقشه:")
