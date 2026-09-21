@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with Google Auth, Admin Login Security, User Activity Logging, Floating Date Box, Layer Access Control, and Fullscreen.
+# Description: Streamlit WebGIS application with Email Auth, Admin Login Security, User Activity Logging, Floating Date Box, Layer Access Control, and Fullscreen.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -99,7 +99,6 @@ def create_user(username, password, role='user', provider='local', first_name=""
         conn.commit()
         return True
     except sqlite3.IntegrityError:
-        # اگر کاربر وجود داشت، اطلاعاتش را آپدیت کن
         c.execute("""UPDATE users SET first_name=?, last_name=?, phone=?, organization=? WHERE username=?""", 
                   (first_name, last_name, phone, organization, username))
         conn.commit()
@@ -124,7 +123,6 @@ def login_or_register_email_user(email, first_name, last_name, phone, organizati
     user = c.fetchone()
     conn.close()
     if user:
-        # به‌روزرسانی اطلاعات در صورت ورود مجدد
         create_user(email, "", role=user[0], provider='email', first_name=first_name, last_name=last_name, phone=phone, organization=organization)
         return user[0]
     else:
@@ -400,14 +398,14 @@ def log_process(msg_type, msg_text, status_obj=None):
     if status_obj: status_obj.write(msg_text)
 
 # ==========================================
-# صفحه ورود و ثبت‌نام
+# صفحه ورود (بدون تب ثبت‌نام اضافه)
 # ==========================================
 if not st.session_state.logged_in:
     st.markdown('<div class="main-title">🌊 ورود به سامانه هوشمند مناطق مستعد صید (PFZ)</div>', unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        tab1, tab2, tab3 = st.tabs(["🔐 ورود به سیستم", "📝 ثبت‌نام", "📧 ورود با ایمیل و مشخصات"])
+        tab1, tab2 = st.tabs(["🔐 ورود به سیستم", "📧 ورود با ایمیل و مشخصات"])
         
         with tab1:
             with st.form("login_form"):
@@ -426,25 +424,8 @@ if not st.session_state.logged_in:
                         st.rerun()
                     else:
                         st.error("نام کاربری یا رمز عبور اشتباه است.")
-                        
-        with tab2:
-            with st.form("register_form"):
-                reg_user = st.text_input("👤 نام کاربری جدید")
-                reg_pass = st.text_input("🔑 رمز عبور", type="password")
-                reg_pass_conf = st.text_input("🔑 تکرار رمز عبور", type="password")
-                submit_reg = st.form_submit_button("ثبت‌نام کاربر عادی", use_container_width=True)
-                
-                if submit_reg:
-                    if not reg_user or not reg_pass:
-                        st.warning("لطفا تمامی فیلدها را پر کنید.")
-                    elif reg_pass != reg_pass_conf:
-                        st.error("رمز عبور و تکرار آن مطابقت ندارند.")
-                    elif create_user(reg_user, reg_pass, 'user', 'local'):
-                        st.success("ثبت‌نام با موفقیت انجام شد. اکنون از تب ورود وارد شوید.")
-                    else:
-                        st.error("این نام کاربری از قبل وجود دارد.")
 
-        with tab3:
+        with tab2:
             st.markdown("### ورود سریع با ایمیل و اطلاعات شخصی")
             with st.form("email_login_form"):
                 email_input = st.text_input("📧 آدرس ایمیل (Email Address)")
