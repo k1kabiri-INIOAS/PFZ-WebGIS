@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with fixed spatial masking and pure visual bounds offset for PFZ alignment.
+# Description: Streamlit WebGIS application with zero visual offset for baseline alignment testing.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -40,11 +40,8 @@ st.set_page_config(page_title="سامانه مدیریت PFZ 🐟", page_icon="�
 # ==========================================
 # تنظیمات میزان شیفت دیداری نقشه (بر حسب درجه جغرافیایی)
 # ==========================================
-# اگر لایه رنگی نسبت به خطوط قرمز جبهه جابه‌جا است، مقادیر زیر را تغییر دهید:
-# مثبت: انتقال به سمت راست (شرق) / بالا (شمال)
-# منفی: انتقال به سمت چپ (غرب) / پایین (جنوب)
-OFFSET_LON_DEG = 0.02  # میزان شیفت طول جغرافیایی (مثلاً 0.02 درجه)
-OFFSET_LAT_DEG = 0.02  # میزان شیفت عرض جغرافیایی (مثلاً 0.02 درجه)
+OFFSET_LON_DEG = 0.0  # بدون شیفت طولی
+OFFSET_LAT_DEG = 0.0  # بدون شیفت عرضی
 
 # ==========================================
 # ۰. سیستم پایگاه داده، لاگ کاربران و احراز هویت
@@ -551,10 +548,7 @@ if st.session_state.role == 'admin':
 # توابع پردازش جبهه و رندر حرارتی
 # ==========================================
 def apply_visual_offset_to_bounds(bounds, lon_offset=0.0, lat_offset=0.0):
-    """
-    اعمال شیفت دیداری خالص بر روی Bounding Box لایه Folium.
-    بدون دستکاری داده‌های اصلی GIS، رستر روی نقشه جابه‌جا می‌شود.
-    """
+    """اعمال شیفت دیداری خالص بر روی Bounding Box لایه Folium."""
     if not bounds:
         return bounds
     sw, ne = bounds
@@ -792,7 +786,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         ).add_to(m)
         
         # ----------------------------------------------------
-        # الف) رندر لایه‌های رنگی پهنه‌بندی (با شیفت دیداری pure bounds)
+        # الف) رندر لایه‌های رنگی پهنه‌بندی (بدون شیفت دیداری)
         # ----------------------------------------------------
         if st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
@@ -816,7 +810,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                                         show=True
                                     ).add_to(m)
 
-                            # ۲. لایه هوشمند PFZ محدود به محدوده جبهه‌ها (ماسک‌کردن روی مختصات واقعی و دقیق)
+                            # ۲. لایه هوشمند PFZ محدود به محدوده جبهه‌ها
                             if st.session_state.combined_fronts_gdf is not None:
                                 da_masked = mask_pfz_by_fronts(da_pfz, st.session_state.combined_fronts_gdf)
                                 if da_masked is not None:
