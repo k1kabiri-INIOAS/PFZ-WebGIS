@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with Light/Dark Theme, Red Front Lines, Masked PFZ within Fronts, and Dynamic Legend.
+# Description: Streamlit WebGIS application with Light/Dark Theme, Red Front Lines, Masked PFZ within Fronts, Dynamic Legend, SST layer fix, and PFZ raster bounds alignment fix (Method 3).
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -616,6 +616,39 @@ def mask_pfz_by_fronts(da, fronts_gdf, buffer_deg=0.06):
         record_error("خطا در برش لایه PFZ روی جبهه‌ها", e)
         return None
 
+def adjust_bounds_offset(bounds, da, shift_x_px=-7.5, shift_y_px=-7.5):
+    """
+    تعدیل Bounding Box لایه PFZ در فرانت‌اند (حالت سوم)
+    جهت هم‌پوشانی و انطباق کامل ۱۰۰٪ با خطوط جبهه‌ها
+    """
+    if not bounds or da is None:
+        return bounds
+    try:
+        lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
+        lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+        if not lat_name or not lon_name:
+            return bounds
+        
+        lats = da[lat_name].values
+        lons = da[lon_name].values
+        
+        dx = abs(lons[1] - lons[0]) if len(lons) > 1 else 0.025
+        dy = abs(lats[1] - lats[0]) if len(lats) > 1 else 0.025
+        
+        shift_lon = shift_x_px * dx
+        shift_lat = shift_y_px * dy
+        
+        miny, minx = bounds[0]
+        maxy, maxx = bounds[1]
+        
+        return [
+            [miny + shift_lat, minx + shift_lon],
+            [maxy + shift_lat, maxx + shift_lon]
+        ]
+    except Exception as e:
+        record_error("خطا در محاسبه جابه‌جایی Bounding Box", e)
+        return bounds
+
 def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
     try:
         lat_name, lon_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None), next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
@@ -647,10 +680,24 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
         return None, None
 
 def load_and_crop_dataset(nc_path, shp_path):
+    """بارگذاری هوشمند متغیرهای SST و Chlorophyll بدون جابه‌جایی یا خطا"""
     if not nc_path or not os.path.exists(nc_path): return None
     try:
         with xr.open_dataset(nc_path) as ds:
-            da = ds[list(ds.data_vars.keys())[0]].load()
+            # ترجیح دادن متغیرهای اختصاصی SST و کلروفیل
+            target_var = None
+            preferred_vars = ['analysed_sst', 'sst', 'chlor_a', 'chl', 'pfz_index']
+            for v in preferred_vars:
+                if v in ds.data_vars:
+                    target_var = v
+                    break
+            if not target_var:
+                target_var = list(ds.data_vars.keys())[0] if ds.data_vars else None
+                
+            if not target_var:
+                return None
+            da = ds[target_var].load()
+
         gdf = gpd.read_file(shp_path).to_crs("EPSG:4326")
         minx, miny, maxx, maxy = gdf.total_bounds
         lat_name, lon_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None), next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
@@ -770,30 +817,32 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
                             
-                            # ۱. لایه اصلی پهنه‌بندی PFZ برای کل منطقه
+                            # ۱. لایه اصلی پهنه‌بندی PFZ برای کل منطقه (با تصحیح Bounding Box)
                             img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ_Full", reg_name, "jet", output_dir)
                             if img_path and bounds and os.path.exists(img_path):
+                                corrected_pfz_bounds = adjust_bounds_offset(bounds, da_pfz, shift_x_px=-7.5, shift_y_px=-7.5)
                                 encoded_img = image_to_base64(img_path)
                                 if encoded_img:
                                     folium.raster_layers.ImageOverlay(
                                         image=encoded_img, 
-                                        bounds=bounds, 
+                                        bounds=corrected_pfz_bounds, 
                                         opacity=0.70, 
                                         name=f"🌊 پهنه‌بندی کل منطقه - PFZ Index ({reg_name})", 
                                         show=True
                                     ).add_to(m)
 
-                            # ۲. لایه هوشمند PFZ محدود به محدوده جبهه‌ها (Masked PFZ)
+                            # ۲. لایه هوشمند PFZ محدود به محدوده جبهه‌ها (Masked PFZ با تصحیح Bounding Box)
                             if st.session_state.combined_fronts_gdf is not None:
                                 da_masked = mask_pfz_by_fronts(da_pfz, st.session_state.combined_fronts_gdf)
                                 if da_masked is not None:
                                     m_path, m_bounds = render_pixel_perfect_heatmap(da_masked, "PFZ_Fronts_Masked", reg_name, "jet", output_dir)
                                     if m_path and m_bounds and os.path.exists(m_path):
+                                        corrected_masked_bounds = adjust_bounds_offset(m_bounds, da_pfz, shift_x_px=-7.5, shift_y_px=-7.5)
                                         enc_masked = image_to_base64(m_path)
                                         if enc_masked:
                                             folium.raster_layers.ImageOverlay(
                                                 image=enc_masked,
-                                                bounds=m_bounds,
+                                                bounds=corrected_masked_bounds,
                                                 opacity=0.85,
                                                 name=f"🎯 الگوی رنگی PFZ فقط در حریم جبهه‌ها ({reg_name})",
                                                 show=True
@@ -801,7 +850,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
 
                     except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
 
-                # لایه دمای سطح دریا (SST)
+                # ۳. لایه دمای سطح دریا (SST) - بازیابی شده و کاملاً فعال
                 if st.session_state.sst_nc_path:
                     try:
                         da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
@@ -819,7 +868,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                                     ).add_to(m)
                     except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
 
-                # لایه کلروفیل-آ (Chlorophyll-a)
+                # ۴. لایه کلروفیل-آ (Chlorophyll-a)
                 if st.session_state.chl_nc_path:
                     try:
                         da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
