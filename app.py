@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with Light/Dark Theme, Normalized PFZ Patterns inside Fronts, Universal Legend, Email Auth, Admin Security, and Activity Logging.
+# Description: Streamlit WebGIS application with Light/Dark Theme, Normalized PFZ Patterns inside Fronts, Universal Legend, Top-Left Date Box, Fixed Sidebar Width, Email Auth, Admin Security, and Activity Logging.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -138,17 +138,22 @@ if "theme_mode" not in st.session_state:
     st.session_state.theme_mode = "Light"
 
 # ==========================================
-# ۱. مدیریت تم روز/شب (Light / Dark Mode)
+# ۱. مدیریت تم روز/شب و اصلاح عرض نوار کناری
 # ==========================================
 if st.session_state.theme_mode == "Dark":
     st.markdown("""
         <style>
         @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
-        .stApp, [data-testid="stSidebar"], body {
+        .stApp, body {
             background-color: #0E1117 !important;
             color: #FAFAFA !important;
             direction: rtl;
             text-align: right;
+        }
+        [data-testid="stSidebar"] {
+            background-color: #1E293B !important;
+            min-width: 340px !important;
+            padding: 1rem !important;
         }
         p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input { font-family: 'Vazirmatn', sans-serif !important; }
         .main-title { font-size: 1.8rem !important; color: #60A5FA !important; font-weight: bold; margin-bottom: 0.5rem; text-align: right !important; }
@@ -166,7 +171,11 @@ else:
     st.markdown("""
         <style>
         @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
-        .stApp, [data-testid="stSidebar"] { direction: rtl; text-align: right; background-color: #FFFFFF; }
+        .stApp { direction: rtl; text-align: right; background-color: #FFFFFF; }
+        [data-testid="stSidebar"] {
+            min-width: 340px !important;
+            padding: 1rem !important;
+        }
         p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input { font-family: 'Vazirmatn', sans-serif !important; }
         .main-title { font-size: 1.8rem !important; color: #1E3A8A !important; font-weight: bold; margin-bottom: 0.5rem; text-align: right !important; }
         .stMarkdown, .stSelectbox, .stSlider { text-align: right; }
@@ -681,7 +690,6 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
     except Exception as ex: record_error(f"خطا در استخراج جبهه برای {region_name}", ex)
     return None
 
-# تابع رندر پیکسل با قابلیت ماسک‌گذاری در محدوده جبهه‌ها و نرمال‌سازی اختصاصی هر منطقه (0 تا 100%)
 def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir, front_gdf=None, buffer_dist_deg=0.08):
     try:
         lat_name, lon_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None), next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
@@ -697,7 +705,6 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir, front_
 
         valid_mask = ~np.isnan(data_arr) & (data_arr > 0)
         
-        # اگر جبهه‌ها مشخص شده باشند، داده‌ها را فقط به بفر اطراف جبهه‌ها (Front Bounds) محدود کن
         if front_gdf is not None and not front_gdf.empty:
             try:
                 reg_fronts = front_gdf[front_gdf['Region'] == reg_name] if 'Region' in front_gdf.columns else front_gdf
@@ -715,7 +722,6 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir, front_
 
         if not valid_mask.any(): return None, None
 
-        # نرمال‌سازی درصد احتمال بر اساس مینیمم و ماکزیمم اختصاصی همان منطقه
         vmin, vmax = float(np.nanmin(data_arr[valid_mask])), float(np.nanmax(data_arr[valid_mask]))
         norm_arr = (data_arr - vmin) / (vmax - vmin) if vmax > vmin else np.zeros_like(data_arr)
         
@@ -856,7 +862,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
                             
-                            # رندر الگوی نرمال‌شده در محدوده جبهه‌ها
                             front_mask = st.session_state.combined_fronts_gdf if show_pfz_in_fronts else None
                             img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ_FrontPattern", reg_name, "jet", output_dir, front_gdf=front_mask)
                             
@@ -867,7 +872,6 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                                     folium.raster_layers.ImageOverlay(image=encoded_img, bounds=bounds, opacity=0.75, name=layer_title, show=True).add_to(m)
                     except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
 
-                # لایه‌های کامل SST و CHL برای ادمین
                 if st.session_state.role == 'admin':
                     if st.session_state.sst_nc_path:
                         try:
@@ -898,21 +902,22 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             ).add_to(regions_fg)
             regions_fg.add_to(m)
 
-        # اضافه کردن Legend راهنما به نقشه
+        # اضافه کردن Legend راهنما به نقشه (پایین سمت چپ)
         PFZLegend().add_to(m)
 
+        # قرار دادن باکس تاریخ اخذ داده در بالا سمت چپ (Top-Left) برای جلوگیری از هم‌پوشانی با Legend
         greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
         if greg_str and jalali_str:
             persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
             jalali_str_fa = jalali_str.translate(persian_digits)
             
             date_box_html = f'''
-                <div class="date-box-container" style="position: fixed; 
-                            bottom: 25px; left: 20px; width: 250px; height: 50px; 
-                            z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
+                <div class="date-box-container" style="position: absolute; 
+                            top: 20px; left: 60px; width: 250px; 
+                            z-index: 9999; font-size: 12px; background-color: rgba(255, 255, 255, 0.92); 
                             border: 2px solid #2B5B84; border-radius: 6px; 
-                            padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
-                            direction: rtl; font-family: 'Vazirmatn', sans-serif;">
+                            padding: 6px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
+                            direction: rtl; font-family: 'Vazirmatn', sans-serif; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
                     تاریخ اخذ داده: {jalali_str_fa}<br>
                     <span style="font-family: Arial, sans-serif; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
                 </div>
