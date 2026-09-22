@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with Corrected Legend Order, Restored Standard Sidebar, Email Auth, Admin Security, and Layer Access Control.
+# Description: Streamlit WebGIS application with Corrected PFZ Heatmap Visibility, Dynamic Legend Alignment, Restored Standard Sidebar, and Layer Access Control.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -454,7 +454,6 @@ if not st.session_state.logged_in:
 # ==========================================
 load_shared_state()
 
-# ساختار منوی سمت راست بر اساس استاندارد app_old.py
 st.sidebar.markdown(f"### 👤 سلام **{st.session_state.username}**")
 st.sidebar.caption(f"🛡️ سطح دسترسی: **{'مدیر سیستم (Admin)' if st.session_state.role == 'admin' else 'کاربر عادی (User)'}**")
 if st.sidebar.button("🚪 خروج (Logout)", use_container_width=True):
@@ -627,7 +626,7 @@ def load_and_crop_dataset(nc_path, shp_path):
         record_error(f"خطا در برش داده {nc_path}", ex)
     return None
 
-# دکمه اجرا در منوی سمت راست
+# دکمه اجرا در منوی سمت راست برای ادمین
 if st.session_state.role == 'admin':
     if st.sidebar.button("🚀 دریافت داده‌های به‌روز و اجرای تحلیل", use_container_width=True):
         if not region_configs:
@@ -693,7 +692,7 @@ if st.session_state.role == 'admin':
                 st.success(text) if msg_type == "success" else st.error(text) if msg_type == "error" else st.info(text)
 
 # ==========================================
-# ۳. رندر نقشه تعاملی و Legend اصلاح شده
+# ۳. رندر نقشه تعاملی و لایه‌های رنگی PFZ
 # ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
     st.markdown('<h3 style="text-align: right; color: #1E3A8A; font-weight: bold; margin-top: 1rem;">🗺️ نقشه تعاملی خطوط جبهه و لایه‌های پایه</h3>', unsafe_allow_html=True)
@@ -719,16 +718,12 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             force_separate_button=True
         ).add_to(m)
         
-        if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
-            fronts_fg = folium.FeatureGroup(name="خطوط جبهه صیادی (Fronts)", show=True)
-            folium.GeoJson(
-                st.session_state.combined_fronts_gdf,
-                style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0}
-            ).add_to(fronts_fg)
-            fronts_fg.add_to(m)
-
-        if st.session_state.role == 'admin' and st.session_state.nc_out_list:
+        # ----------------------------------------------------
+        # الف) رندر لایه‌های رنگی پهنه‌بندی (برای همه کاربران)
+        # ----------------------------------------------------
+        if st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
+                # لایه رنگی اصلی پتانسیل صید (PFZ Index) - به‌صورت پیش‌فرض روشن (show=True)
                 if nc_out and os.path.exists(nc_out):
                     try:
                         with xr.open_dataset(nc_out) as ds_pfz:
@@ -738,9 +733,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path and bounds and os.path.exists(img_path):
                                 encoded_img = image_to_base64(img_path)
                                 if encoded_img:
-                                    folium.raster_layers.ImageOverlay(image=encoded_img, bounds=bounds, opacity=0.65, name=f"PFZ Index ({reg_name})", show=False).add_to(m)
+                                    folium.raster_layers.ImageOverlay(
+                                        image=encoded_img, 
+                                        bounds=bounds, 
+                                        opacity=0.70, 
+                                        name=f"🌊 پهنه‌بندی پتانسیل صید - PFZ Index ({reg_name})", 
+                                        show=True
+                                    ).add_to(m)
                     except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
 
+                # لایه دمای سطح دریا (SST)
                 if st.session_state.sst_nc_path:
                     try:
                         da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
@@ -749,9 +751,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path_sst and bounds_sst and os.path.exists(img_path_sst):
                                 encoded_img_sst = image_to_base64(img_path_sst)
                                 if encoded_img_sst:
-                                    folium.raster_layers.ImageOverlay(image=encoded_img_sst, bounds=bounds_sst, opacity=0.65, name=f"SST - دمای سطح دریا ({reg_name})", show=False).add_to(m)
+                                    folium.raster_layers.ImageOverlay(
+                                        image=encoded_img_sst, 
+                                        bounds=bounds_sst, 
+                                        opacity=0.65, 
+                                        name=f"🌡️ دمای سطح دریا - SST ({reg_name})", 
+                                        show=False
+                                    ).add_to(m)
                     except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
 
+                # لایه کلروفیل-آ (Chlorophyll-a)
                 if st.session_state.chl_nc_path:
                     try:
                         da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
@@ -760,22 +769,42 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             if img_path_chl and bounds_chl and os.path.exists(img_path_chl):
                                 encoded_img_chl = image_to_base64(img_path_chl)
                                 if encoded_img_chl:
-                                    folium.raster_layers.ImageOverlay(image=encoded_img_chl, bounds=bounds_chl, opacity=0.65, name=f"Chlorophyll-a ({reg_name})", show=False).add_to(m)
+                                    folium.raster_layers.ImageOverlay(
+                                        image=encoded_img_chl, 
+                                        bounds=bounds_chl, 
+                                        opacity=0.65, 
+                                        name=f"🌱 غلظت کلروفیل - Chlorophyll-a ({reg_name})", 
+                                        show=False
+                                    ).add_to(m)
                     except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
 
-            regions_fg = folium.FeatureGroup(name="محدوده مناطق (Regions)", show=False)
+        # ----------------------------------------------------
+        # ب) خطوط جبهه صیادی (Fronts)
+        # ----------------------------------------------------
+        if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
+            fronts_fg = folium.FeatureGroup(name="🎯 خطوط جبهه صیادی (Front Lines)", show=True)
             folium.GeoJson(
-                st.session_state.combined_region_gdf,
-                style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
-            ).add_to(regions_fg)
-            regions_fg.add_to(m)
+                st.session_state.combined_fronts_gdf,
+                style_function=lambda x: {'color': '#000000', 'weight': 3.5, 'opacity': 0.9, 'dashArray': '3, 3'}
+            ).add_to(fronts_fg)
+            fronts_fg.add_to(m)
 
         # ----------------------------------------------------
-        # افزودن Legend اصلاح‌شده (قرمز/گرم = عالی، آبی/سرد = کم)
+        # ج) مرز مناطق
+        # ----------------------------------------------------
+        regions_fg = folium.FeatureGroup(name="📌 محدوده مناطق (Regions)", show=False)
+        folium.GeoJson(
+            st.session_state.combined_region_gdf,
+            style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
+        ).add_to(regions_fg)
+        regions_fg.add_to(m)
+
+        # ----------------------------------------------------
+        # د) Legend اصلاح شده و منطبق با رنگ‌های PFZ
         # ----------------------------------------------------
         legend_html = '''
         <div style="position: fixed; 
-                    bottom: 85px; left: 20px; width: 175px; 
+                    bottom: 85px; left: 20px; width: 180px; 
                     z-index:9999; font-size:11px; background-color: rgba(255, 255, 255, 0.95); 
                     border: 2px solid #2B5B84; border-radius: 8px; 
                     padding: 8px; font-weight: bold; color: #1E3A8A;
