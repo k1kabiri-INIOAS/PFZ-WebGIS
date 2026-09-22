@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with zero visual offset for baseline alignment testing.
+# Description: Streamlit WebGIS application with fine-tuned visual offset (0.005 deg) for alignment.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -40,8 +40,8 @@ st.set_page_config(page_title="سامانه مدیریت PFZ 🐟", page_icon="�
 # ==========================================
 # تنظیمات میزان شیفت دیداری نقشه (بر حسب درجه جغرافیایی)
 # ==========================================
-OFFSET_LON_DEG = 0.0  # بدون شیفت طولی
-OFFSET_LAT_DEG = 0.0  # بدون شیفت عرضی
+OFFSET_LON_DEG = 0.005  # شیفت جزئی طولی
+OFFSET_LAT_DEG = 0.005  # شیفت جزئی عرضی
 
 # ==========================================
 # ۰. سیستم پایگاه داده، لاگ کاربران و احراز هویت
@@ -786,7 +786,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         ).add_to(m)
         
         # ----------------------------------------------------
-        # الف) رندر لایه‌های رنگی پهنه‌بندی (بدون شیفت دیداری)
+        # الف) رندر لایه‌های رنگی پهنه‌بندی (با شیفت دیداری 0.005)
         # ----------------------------------------------------
         if st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
@@ -836,11 +836,12 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                         if da_sst is not None:
                             img_path_sst, bounds_sst = render_pixel_perfect_heatmap(da_sst, "SST", reg_name, "coolwarm", output_dir)
                             if img_path_sst and bounds_sst and os.path.exists(img_path_sst):
+                                shifted_sst_bounds = apply_visual_offset_to_bounds(bounds_sst, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
                                 encoded_img_sst = image_to_base64(img_path_sst)
                                 if encoded_img_sst:
                                     folium.raster_layers.ImageOverlay(
                                         image=encoded_img_sst, 
-                                        bounds=bounds_sst, 
+                                        bounds=shifted_sst_bounds, 
                                         opacity=0.65, 
                                         name=f"🌡️ دمای سطح دریا - SST ({reg_name})", 
                                         show=False
@@ -854,11 +855,12 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                         if da_chl is not None:
                             img_path_chl, bounds_chl = render_pixel_perfect_heatmap(da_chl, "Chlorophyll-a", reg_name, "YlGn", output_dir)
                             if img_path_chl and bounds_chl and os.path.exists(img_path_chl):
+                                shifted_chl_bounds = apply_visual_offset_to_bounds(bounds_chl, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
                                 encoded_img_chl = image_to_base64(img_path_chl)
                                 if encoded_img_chl:
                                     folium.raster_layers.ImageOverlay(
                                         image=encoded_img_chl, 
-                                        bounds=bounds_chl, 
+                                        bounds=shifted_chl_bounds, 
                                         opacity=0.65, 
                                         name=f"🌱 غلظت کلروفیل - Chlorophyll-a ({reg_name})", 
                                         show=False
