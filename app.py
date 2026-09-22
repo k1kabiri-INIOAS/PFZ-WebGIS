@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with Corrected PFZ Heatmap Visibility, Dynamic Legend Alignment, Restored Standard Sidebar, and Layer Access Control.
+# Description: Streamlit WebGIS application with Light/Dark Theme, Red Front Lines, Masked PFZ within Fronts, and Dynamic Legend.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import folium
 from folium.plugins import Fullscreen
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 from streamlit_folium import st_folium
 import scipy.ndimage as ndimage
 from branca.element import MacroElement
@@ -463,6 +463,11 @@ if st.sidebar.button("🚪 خروج (Logout)", use_container_width=True):
 
 st.sidebar.markdown("---")
 
+# 🌓 انتخاب تم روز / شب برای نقشه
+map_theme = st.sidebar.radio("🎨 تم نقشه (Map Theme)", ["☀️ روز (Light)", "🌙 شب (Dark)"], index=0)
+
+st.sidebar.markdown("---")
+
 DEFAULT_SHAPES_PATH = "default_shapes.zip"
 region_configs = {}
 
@@ -583,6 +588,34 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
     except Exception as ex: record_error(f"خطا در استخراج جبهه برای {region_name}", ex)
     return None
 
+def mask_pfz_by_fronts(da, fronts_gdf, buffer_deg=0.06):
+    """برش لایه PFZ تنها در حریم/محدوده اطراف خطوط جبهه صیادی"""
+    if fronts_gdf is None or fronts_gdf.empty or da is None:
+        return None
+    try:
+        lat_name, lon_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None), next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+        if not lat_name or not lon_name: return None
+
+        lats, lons = da[lat_name].values, da[lon_name].values
+        lon_grid, lat_grid = np.meshgrid(lons, lats)
+
+        fronts_union = fronts_gdf.geometry.buffer(buffer_deg).unary_union
+        
+        try:
+            from shapely.vectorized import contains
+            mask = contains(fronts_union, lon_grid, lat_grid)
+        except ImportError:
+            from shapely.prepared import prep
+            prep_poly = prep(fronts_union)
+            mask = np.array([prep_poly.contains(Point(x, y)) for x, y in zip(lon_grid.ravel(), lat_grid.ravel())]).reshape(lon_grid.shape)
+
+        da_masked = da.copy()
+        da_masked.values[~mask] = np.nan
+        return da_masked
+    except Exception as e:
+        record_error("خطا در برش لایه PFZ روی جبهه‌ها", e)
+        return None
+
 def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
     try:
         lat_name, lon_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None), next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
@@ -698,16 +731,24 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
     st.markdown('<h3 style="text-align: right; color: #1E3A8A; font-weight: bold; margin-top: 1rem;">🗺️ نقشه تعاملی خطوط جبهه و لایه‌های پایه</h3>', unsafe_allow_html=True)
 
     try:
+        is_dark = "شب" in map_theme
+        
         m = folium.Map(
             location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
             zoom_start=6, 
             tiles=None
         )
         
-        folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)', show=True).add_to(m)
-        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='تصاویر ماهواره‌ای گوگل (Satellite)', overlay=False, control=True, show=False).add_to(m)
-        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google Hybrid', name='نقشه ترکیبی گوگل (Hybrid)', overlay=False, control=True, show=False).add_to(m)
-        folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attr='Esri Topo', name='توپوگرافی (Esri Topo)', overlay=False, control=True, show=False).add_to(m)
+        # تنظیم لایه‌های پایه و پیش‌فرض بر اساس تم شب / روز
+        if is_dark:
+            folium.TileLayer('CartoDB dark_matter', name='نقشه تاریک (Dark Mode)', show=True).add_to(m)
+            folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='تصاویر ماهواره‌ای گوگل (Satellite)', overlay=False, control=True, show=False).add_to(m)
+            folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)', show=False).add_to(m)
+        else:
+            folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)', show=True).add_to(m)
+            folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='تصاویر ماهواره‌ای گوگل (Satellite)', overlay=False, control=True, show=False).add_to(m)
+            folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google Hybrid', name='نقشه ترکیبی گوگل (Hybrid)', overlay=False, control=True, show=False).add_to(m)
+            folium.TileLayer('CartoDB dark_matter', name='نقشه تاریک (Dark Mode)', show=False).add_to(m)
 
         CustomMapFeatures().add_to(m)
         
@@ -723,13 +764,14 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         # ----------------------------------------------------
         if st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
-                # لایه رنگی اصلی پتانسیل صید (PFZ Index) - به‌صورت پیش‌فرض روشن (show=True)
                 if nc_out and os.path.exists(nc_out):
                     try:
                         with xr.open_dataset(nc_out) as ds_pfz:
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
-                            img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ", reg_name, "jet", output_dir)
+                            
+                            # ۱. لایه اصلی پهنه‌بندی PFZ برای کل منطقه
+                            img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ_Full", reg_name, "jet", output_dir)
                             if img_path and bounds and os.path.exists(img_path):
                                 encoded_img = image_to_base64(img_path)
                                 if encoded_img:
@@ -737,9 +779,26 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                                         image=encoded_img, 
                                         bounds=bounds, 
                                         opacity=0.70, 
-                                        name=f"🌊 پهنه‌بندی پتانسیل صید - PFZ Index ({reg_name})", 
+                                        name=f"🌊 پهنه‌بندی کل منطقه - PFZ Index ({reg_name})", 
                                         show=True
                                     ).add_to(m)
+
+                            # ۲. لایه هوشمند PFZ محدود به محدوده جبهه‌ها (Masked PFZ)
+                            if st.session_state.combined_fronts_gdf is not None:
+                                da_masked = mask_pfz_by_fronts(da_pfz, st.session_state.combined_fronts_gdf)
+                                if da_masked is not None:
+                                    m_path, m_bounds = render_pixel_perfect_heatmap(da_masked, "PFZ_Fronts_Masked", reg_name, "jet", output_dir)
+                                    if m_path and m_bounds and os.path.exists(m_path):
+                                        enc_masked = image_to_base64(m_path)
+                                        if enc_masked:
+                                            folium.raster_layers.ImageOverlay(
+                                                image=enc_masked,
+                                                bounds=m_bounds,
+                                                opacity=0.85,
+                                                name=f"🎯 الگوی رنگی PFZ فقط در حریم جبهه‌ها ({reg_name})",
+                                                show=True
+                                            ).add_to(m)
+
                     except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
 
                 # لایه دمای سطح دریا (SST)
@@ -779,13 +838,13 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                     except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
 
         # ----------------------------------------------------
-        # ب) خطوط جبهه صیادی (Fronts)
+        # ب) خطوط جبهه صیادی (Fronts) - قرمز رنگ و درخشان
         # ----------------------------------------------------
         if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
-            fronts_fg = folium.FeatureGroup(name="🎯 خطوط جبهه صیادی (Front Lines)", show=True)
+            fronts_fg = folium.FeatureGroup(name="🚩 خطوط جبهه صیادی (Front Lines - Red)", show=True)
             folium.GeoJson(
                 st.session_state.combined_fronts_gdf,
-                style_function=lambda x: {'color': '#000000', 'weight': 3.5, 'opacity': 0.9, 'dashArray': '3, 3'}
+                style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 0.95}
             ).add_to(fronts_fg)
             fronts_fg.add_to(m)
 
@@ -795,43 +854,48 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         regions_fg = folium.FeatureGroup(name="📌 محدوده مناطق (Regions)", show=False)
         folium.GeoJson(
             st.session_state.combined_region_gdf,
-            style_function=lambda x: {'color': '#0000FF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
+            style_function=lambda x: {'color': '#007BFF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
         ).add_to(regions_fg)
         regions_fg.add_to(m)
 
         # ----------------------------------------------------
-        # د) Legend اصلاح شده و منطبق با رنگ‌های PFZ
+        # د) Legend اصلاح شده متناسب با تم شب/روز
         # ----------------------------------------------------
-        legend_html = '''
+        bg_color = "rgba(20, 20, 20, 0.90)" if is_dark else "rgba(255, 255, 255, 0.95)"
+        text_color = "#FFFFFF" if is_dark else "#1E3A8A"
+        item_text_color = "#DDDDDD" if is_dark else "#333333"
+        border_color = "#444444" if is_dark else "#2B5B84"
+
+        legend_html = f'''
         <div style="position: fixed; 
-                    bottom: 85px; left: 20px; width: 180px; 
-                    z-index:9999; font-size:11px; background-color: rgba(255, 255, 255, 0.95); 
-                    border: 2px solid #2B5B84; border-radius: 8px; 
-                    padding: 8px; font-weight: bold; color: #1E3A8A;
+                    bottom: 85px; left: 20px; width: 185px; 
+                    z-index:9999; font-size:11px; background-color: {bg_color}; 
+                    border: 2px solid {border_color}; border-radius: 8px; 
+                    padding: 8px; font-weight: bold; color: {text_color};
                     direction: rtl; font-family: 'Vazirmatn', sans-serif;
-                    box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
-            <div style="text-align: center; border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-bottom: 6px; font-size: 12px; font-weight: bold;">
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.4);">
+            <div style="text-align: center; border-bottom: 1px solid #777; padding-bottom: 4px; margin-bottom: 6px; font-size: 12px; font-weight: bold;">
                 🎯 پتانسیل صید (PFZ)
             </div>
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
                 <span style="width: 14px; height: 14px; background: #800000; display: inline-block; border-radius: 3px;"></span>
-                <span style="flex-grow: 1; margin-right: 8px; color: #333;">عالی (بسیار بالا)</span>
+                <span style="flex-grow: 1; margin-right: 8px; color: {item_text_color};">عالی (بسیار بالا)</span>
             </div>
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
                 <span style="width: 14px; height: 14px; background: #FF0000; display: inline-block; border-radius: 3px;"></span>
-                <span style="flex-grow: 1; margin-right: 8px; color: #333;">خوب (بالا)</span>
+                <span style="flex-grow: 1; margin-right: 8px; color: {item_text_color};">خوب (بالا)</span>
             </div>
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
                 <span style="width: 14px; height: 14px; background: #00FF00; display: inline-block; border-radius: 3px;"></span>
-                <span style="flex-grow: 1; margin-right: 8px; color: #333;">متوسط</span>
+                <span style="flex-grow: 1; margin-right: 8px; color: {item_text_color};">متوسط</span>
             </div>
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
                 <span style="width: 14px; height: 14px; background: #00FFFF; display: inline-block; border-radius: 3px;"></span>
-                <span style="flex-grow: 1; margin-right: 8px; color: #333;">کم</span>
+                <span style="flex-grow: 1; margin-right: 8px; color: {item_text_color};">کم</span>
             </div>
             <div style="display: flex; align-items: center; justify-content: space-between;">
                 <span style="width: 14px; height: 14px; background: #000080; display: inline-block; border-radius: 3px;"></span>
-                <span style="flex-grow: 1; margin-right: 8px; color: #333;">بسیار کم / ناچیز</span>
+                <span style="flex-grow: 1; margin-right: 8px; color: {item_text_color};">بسیار کم / ناچیز</span>
             </div>
         </div>
         '''
@@ -846,12 +910,12 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             date_box_html = f'''
                 <div style="position: fixed; 
                             bottom: 25px; left: 20px; width: 250px; height: 50px; 
-                            z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
-                            border: 2px solid #2B5B84; border-radius: 6px; 
-                            padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
+                            z-index:9999; font-size:12px; background-color: {bg_color}; 
+                            border: 2px solid {border_color}; border-radius: 6px; 
+                            padding: 4px; font-weight: bold; text-align: center; color: {text_color}; line-height: 1.4;
                             direction: rtl; font-family: 'Vazirmatn', sans-serif;">
                     تاریخ اخذ داده: {jalali_str_fa}<br>
-                    <span style="font-family: Arial, sans-serif; color: #333333; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
+                    <span style="font-family: Arial, sans-serif; color: {item_text_color}; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
                 </div>
             '''
             m.get_root().html.add_child(folium.Element(date_box_html))
