@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with Light/Dark Theme, Normalized PFZ Patterns inside Fronts, Universal Legend, Top-Left Date Box, Fixed Sidebar Width, Email Auth, Admin Security, and Activity Logging.
+# Description: Streamlit WebGIS application with Corrected Legend Order, Restored Standard Sidebar, Email Auth, Admin Security, and Layer Access Control.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -35,7 +35,7 @@ from modules.processor import process_pfz_pipeline
 warnings.filterwarnings("ignore")
 plt.switch_backend('Agg')
 
-st.set_page_config(page_title="سامانه هوشمند تشخیص مناطق مستعد صیادی (نسخه آزمایشی)", page_icon="🌊", layout="wide")
+st.set_page_config(page_title="سامانه مدیریت PFZ 🐟", page_icon="🐟", layout="wide")
 
 # ==========================================
 # ۰. سیستم پایگاه داده، لاگ کاربران و احراز هویت
@@ -134,65 +134,26 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = ""
     st.session_state.role = ""
-if "theme_mode" not in st.session_state:
-    st.session_state.theme_mode = "Light"
 
 # ==========================================
-# ۱. مدیریت تم روز/شب و اصلاح عرض نوار کناری
+# استایل‌دهی کلی و کنترل دسترسی کاربران
 # ==========================================
-if st.session_state.theme_mode == "Dark":
-    st.markdown("""
-        <style>
-        @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
-        .stApp, body {
-            background-color: #0E1117 !important;
-            color: #FAFAFA !important;
-            direction: rtl;
-            text-align: right;
-        }
-        [data-testid="stSidebar"] {
-            background-color: #1E293B !important;
-            min-width: 340px !important;
-            padding: 1rem !important;
-        }
-        p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input { font-family: 'Vazirmatn', sans-serif !important; }
-        .main-title { font-size: 1.8rem !important; color: #60A5FA !important; font-weight: bold; margin-bottom: 0.5rem; text-align: right !important; }
-        .stMarkdown, .stSelectbox, .stSlider { text-align: right; }
-        div[data-testid="stExpander"] { background-color: #1E293B !important; border: 1px solid #334155 !important; border-radius: 8px; }
-        .coord-box, .info.legend, .date-box-container {
-            background-color: rgba(15, 23, 42, 0.92) !important;
-            color: #F8FAFC !important;
-            border-color: #3B82F6 !important;
-        }
-        .coord-box span, .info.legend div { color: #F8FAFC !important; }
-        </style>
-    """, unsafe_allow_html=True)
-else:
-    st.markdown("""
-        <style>
-        @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
-        .stApp { direction: rtl; text-align: right; background-color: #FFFFFF; }
-        [data-testid="stSidebar"] {
-            min-width: 340px !important;
-            padding: 1rem !important;
-        }
-        p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input { font-family: 'Vazirmatn', sans-serif !important; }
-        .main-title { font-size: 1.8rem !important; color: #1E3A8A !important; font-weight: bold; margin-bottom: 0.5rem; text-align: right !important; }
-        .stMarkdown, .stSelectbox, .stSlider { text-align: right; }
-        </style>
-    """, unsafe_allow_html=True)
+st.markdown("""
+    <style>
+    @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
+    .stApp, [data-testid="stSidebar"] { direction: rtl; text-align: right; }
+    p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input { font-family: 'Vazirmatn', sans-serif; }
+    .main-title { font-size: 2.0rem !important; color: #1E3A8A; font-weight: bold; margin-bottom: 1rem; text-align: right !important; }
+    .stMarkdown, .stSelectbox, .stSlider { text-align: right; }
+    </style>
+""", unsafe_allow_html=True)
 
-# محدودسازی هدر برای کاربران غیر ادمین
-if not (st.session_state.get("logged_in", False) and st.session_state.get("role") == "admin"):
+if st.session_state.logged_in and st.session_state.role != 'admin':
     st.markdown("""
         <style>
         .stDeployButton {display: none !important;}
         [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
         header [data-testid="baseButton-header"] {display: none !important;}
-        #MainMenu {visibility: hidden !important;}
-        header {visibility: hidden !important;}
-        .stAppHeader {display: none !important;}
-        footer {visibility: hidden !important;}
         </style>
     """, unsafe_allow_html=True)
 
@@ -250,7 +211,7 @@ def image_to_base64(path):
         return None
 
 # ==========================================
-# کلاس‌های سفارشی نقشه (مختصات DDM و Legend راهنما)
+# کلاس کنترل سفارشی نقشه (مختصات DDM، کپی، اشتراک‌گذاری)
 # ==========================================
 class CustomMapFeatures(MacroElement):
     _template = Template("""
@@ -390,46 +351,6 @@ class CustomMapFeatures(MacroElement):
     def __init__(self):
         super().__init__()
 
-# راهنمای درصد احتمال حضور ماهی (Legend)
-class PFZLegend(MacroElement):
-    _template = Template("""
-    {% macro script(this, kwargs) %}
-    var legend = L.control({position: 'bottomleft'});
-    legend.onAdd = function (map) {
-        var div = L.DomUtil.create('div', 'info legend');
-        div.style.padding = '10px 14px';
-        div.style.background = 'rgba(255, 255, 255, 0.92)';
-        div.style.border = '2px solid #2B5B84';
-        div.style.borderRadius = '8px';
-        div.style.fontSize = '12px';
-        div.style.fontFamily = 'Vazirmatn, sans-serif';
-        div.style.direction = 'rtl';
-        div.style.boxShadow = '0 2px 6px rgba(0,0,0,0.3)';
-        div.style.zIndex = '1000';
-
-        div.innerHTML = `
-            <div style="font-weight: bold; margin-bottom: 6px; text-align: center; color: #1E3A8A; font-size: 12px;">
-                🐟 احتمال حضور ماهی در جبهه‌ها (PFZ %)
-            </div>
-            <div style="height: 14px; width: 190px; background: linear-gradient(to right, #000080, #0000FF, #00FFFF, #00FF00, #FFFF00, #FF0000, #800000); border-radius: 3px; border: 1px solid #555;"></div>
-            <div style="display: flex; justify-content: space-between; width: 190px; margin-top: 4px; font-weight: bold; font-size: 10px; color: #333;">
-                <span>۰٪ (کم)</span>
-                <span>۵۰٪ (متوسط)</span>
-                <span>۱۰۰٪ (عالی)</span>
-            </div>
-            <div style="font-size: 9px; color: #666; margin-top: 4px; text-align: center;">
-                * نرمال‌شده بر اساس مقادیر اختصاصی هر منطقه
-            </div>
-        `;
-        L.DomEvent.disableClickPropagation(div);
-        return div;
-    };
-    legend.addTo({{ this._parent.get_name() }});
-    {% endmacro %}
-    """)
-    def __init__(self):
-        super().__init__()
-
 logging.basicConfig(level=logging.WARNING, format='[%(asctime)s] %(levelname)s: %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
 
 def gregorian_to_jalali(gy, gm, gd):
@@ -476,21 +397,11 @@ def log_process(msg_type, msg_text, status_obj=None):
     if status_obj: status_obj.write(msg_text)
 
 # ==========================================
-# صفحه ورود
+# صفحه ورود کاربران
 # ==========================================
 if not st.session_state.logged_in:
-    col_logo, col_title = st.columns([1, 6])
-    with col_logo:
-        logo_path = "INIOAS Logo Color-P.jpg"
-        if os.path.exists(logo_path):
-            st.image(logo_path, width=100)
-        else:
-            st.markdown("<h1 style='text-align: center;'>🌊</h1>", unsafe_allow_html=True)
-    with col_title:
-        st.markdown("<h4 style='margin-bottom: 0px; color: #1E3A8A; font-weight: bold;'>پژوهشگاه ملی اقیانوس‌شناسی و علوم جوی</h4>", unsafe_allow_html=True)
-        st.markdown("<h2 style='margin-top: 5px; color: #0F172A; font-weight: bold;'>🌊 ورود به سامانه هوشمند تشخیص مناطق مستعد صید (نسخه آزمایشی)</h2>", unsafe_allow_html=True)
-    st.markdown("---")
-
+    st.markdown('<div class="main-title">🌊 ورود به سامانه هوشمند مناطق مستعد صید (PFZ)</div>', unsafe_allow_html=True)
+    
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         tab1, tab2 = st.tabs(["🔐 ورود به سیستم", "📧 ورود با ایمیل و مشخصات"])
@@ -539,72 +450,19 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ==========================================
-# بدنه اصلی برنامه پس از لاگین موفق
+# بدنه اصلی برنامه و منوی کناری (Sidebar)
 # ==========================================
 load_shared_state()
 
-# پنل کناری: انتخاب پوسته روز/شب
+# ساختار منوی سمت راست بر اساس استاندارد app_old.py
 st.sidebar.markdown(f"### 👤 سلام **{st.session_state.username}**")
 st.sidebar.caption(f"🛡️ سطح دسترسی: **{'مدیر سیستم (Admin)' if st.session_state.role == 'admin' else 'کاربر عادی (User)'}**")
-
-theme_choice = st.sidebar.radio("🎨 پوسته برنامه (Theme)", ["☀️ حالت روز (Light)", "🌙 حالت شب (Dark)"], index=0 if st.session_state.theme_mode == "Light" else 1)
-new_theme = "Light" if "روز" in theme_choice else "Dark"
-if new_theme != st.session_state.theme_mode:
-    st.session_state.theme_mode = new_theme
-    st.rerun()
-
 if st.sidebar.button("🚪 خروج (Logout)", use_container_width=True):
     log_user_activity(st.session_state.username, "LOGOUT")
     st.session_state.logged_in = False
     st.rerun()
 
 st.sidebar.markdown("---")
-
-# هدر اصلی سامانه
-col_logo, col_title = st.columns([1, 6])
-with col_logo:
-    logo_path = "INIOAS Logo Color-P.jpg"
-    if os.path.exists(logo_path):
-        st.image(logo_path, width=100)
-    else:
-        st.markdown("<h1 style='text-align: center;'>🌊</h1>", unsafe_allow_html=True)
-
-with col_title:
-    st.markdown("<h4 style='margin-bottom: 0px; color: #1E3A8A; font-weight: bold;'>پژوهشگاه ملی اقیانوس‌شناسی و علوم جوی</h4>", unsafe_allow_html=True)
-    st.markdown("<h2 style='margin-top: 5px; color: #0F172A; font-weight: bold;'>🌊 سامانه هوشمند تشخیص مناطق مستعد صید (نسخه آزمایشی) 🐟</h2>", unsafe_allow_html=True)
-
-st.markdown("---")
-
-# ==========================================
-# گزارش‌دهی ورود و خروج ادمین
-# ==========================================
-if st.session_state.role == 'admin':
-    with st.expander("📊 گزارش ورود و خروج کاربران و اطلاعات ثبت‌نامی", expanded=False):
-        tab_log1, tab_log2 = st.tabs(["📝 لاگ فعالیت‌ها", "👥 لیست کاربران ثبت‌نام‌شده"])
-        
-        with tab_log1:
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                logs_df = pd.read_sql_query("SELECT username AS 'نام کاربری/ایمیل', action AS 'عملیات', timestamp AS 'زمان' FROM user_logs ORDER BY id DESC LIMIT 50", conn)
-                conn.close()
-                if not logs_df.empty:
-                    st.dataframe(logs_df, use_container_width=True)
-                else:
-                    st.info("هنوز گزارشی ثبت نشده است.")
-            except Exception as e:
-                st.error(f"خطا در خواندن لاگ کاربران: {e}")
-                
-        with tab_log2:
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                users_df = pd.read_sql_query("SELECT username AS 'ایمیل/نام‌کاربری', first_name AS 'نام', last_name AS 'نام خانوادگی', phone AS 'تلفن', organization AS 'سازمان', role AS 'نقش' FROM users", conn)
-                conn.close()
-                if not users_df.empty:
-                    st.dataframe(users_df, use_container_width=True)
-                else:
-                    st.info("کاربری ثبت نشده است.")
-            except Exception as e:
-                st.error(f"خطا در خواندن لیست کاربران: {e}")
 
 DEFAULT_SHAPES_PATH = "default_shapes.zip"
 region_configs = {}
@@ -644,6 +502,42 @@ if st.session_state.role == 'admin':
         except Exception as ex:
             record_error("خطا در استخراج شیپ‌فایل", ex)
 
+st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ) 🐟</div>', unsafe_allow_html=True)
+
+# ==========================================
+# بخش مدیریت و لاگ ادمین
+# ==========================================
+if st.session_state.role == 'admin':
+    with st.expander("📊 گزارش ورود و خروج کاربران و اطلاعات ثبت‌نامی", expanded=False):
+        tab_log1, tab_log2 = st.tabs(["📝 لاگ فعالیت‌ها", "👥 لیست کاربران ثبت‌نام‌شده"])
+        
+        with tab_log1:
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                logs_df = pd.read_sql_query("SELECT username AS 'نام کاربری/ایمیل', action AS 'عملیات', timestamp AS 'زمان' FROM user_logs ORDER BY id DESC LIMIT 50", conn)
+                conn.close()
+                if not logs_df.empty:
+                    st.dataframe(logs_df, use_container_width=True)
+                else:
+                    st.info("هنوز گزارشی ثبت نشده است.")
+            except Exception as e:
+                st.error(f"خطا در خواندن لاگ کاربران: {e}")
+                
+        with tab_log2:
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                users_df = pd.read_sql_query("SELECT username AS 'ایمیل/نام‌کاربری', first_name AS 'نام', last_name AS 'نام خانوادگی', phone AS 'تلفن', organization AS 'سازمان', role AS 'نقش' FROM users", conn)
+                conn.close()
+                if not users_df.empty:
+                    st.dataframe(users_df, use_container_width=True)
+                else:
+                    st.info("کاربری ثبت نشده است.")
+            except Exception as e:
+                st.error(f"خطا در خواندن لیست کاربران: {e}")
+
+# ==========================================
+# توابع پردازش جبهه و رندر حرارتی
+# ==========================================
 def generate_fronts_fallback(nc_path, user_threshold, region_name):
     try:
         if not nc_path or not os.path.exists(nc_path): return None
@@ -690,7 +584,7 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
     except Exception as ex: record_error(f"خطا در استخراج جبهه برای {region_name}", ex)
     return None
 
-def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir, front_gdf=None, buffer_dist_deg=0.08):
+def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
     try:
         lat_name, lon_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None), next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
         if not lat_name or not lon_name: return None, None
@@ -704,22 +598,6 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir, front_
         grid_minx, grid_maxx, grid_miny, grid_maxy = float(lons[0]) - dx, float(lons[-1]) + dx, float(lats[0]) - dy, float(lats[-1]) + dy
 
         valid_mask = ~np.isnan(data_arr) & (data_arr > 0)
-        
-        if front_gdf is not None and not front_gdf.empty:
-            try:
-                reg_fronts = front_gdf[front_gdf['Region'] == reg_name] if 'Region' in front_gdf.columns else front_gdf
-                if not reg_fronts.empty:
-                    front_buf_union = reg_fronts.geometry.buffer(buffer_dist_deg).unary_union
-                    lon_grid, lat_grid = np.meshgrid(lons, lats)
-                    try:
-                        from shapely.vectorized import contains
-                        in_front_buf = contains(front_buf_union, lon_grid, lat_grid)
-                        valid_mask = valid_mask & in_front_buf
-                    except Exception:
-                        pass
-            except Exception as e:
-                record_error("خطا در برش دیتای PFZ با جبهه‌ها", e)
-
         if not valid_mask.any(): return None, None
 
         vmin, vmax = float(np.nanmin(data_arr[valid_mask])), float(np.nanmax(data_arr[valid_mask]))
@@ -749,6 +627,7 @@ def load_and_crop_dataset(nc_path, shp_path):
         record_error(f"خطا در برش داده {nc_path}", ex)
     return None
 
+# دکمه اجرا در منوی سمت راست
 if st.session_state.role == 'admin':
     if st.sidebar.button("🚀 دریافت داده‌های به‌روز و اجرای تحلیل", use_container_width=True):
         if not region_configs:
@@ -813,15 +692,11 @@ if st.session_state.role == 'admin':
             for msg_type, text in st.session_state.process_logs:
                 st.success(text) if msg_type == "success" else st.error(text) if msg_type == "error" else st.info(text)
 
-# گزینه تنظیمات نمایش الگوی PFZ در جبهه‌ها
-st.sidebar.markdown("---")
-show_pfz_in_fronts = st.sidebar.checkbox("🎯 نمایش الگوی رنگی احتمال صید در محدوده جبهه‌ها", value=True)
-
 # ==========================================
-# ۳. رندر نقشه تعاملی و لایه‌بندی‌ها
+# ۳. رندر نقشه تعاملی و Legend اصلاح شده
 # ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
-    st.markdown('<h3 style="text-align: right; font-weight: bold; margin-top: 1rem;">🗺️ نقشه تعاملی خطوط جبهه و الگوی احتمال صید (PFZ)</h3>', unsafe_allow_html=True)
+    st.markdown('<h3 style="text-align: right; color: #1E3A8A; font-weight: bold; margin-top: 1rem;">🗺️ نقشه تعاملی خطوط جبهه و لایه‌های پایه</h3>', unsafe_allow_html=True)
 
     try:
         m = folium.Map(
@@ -844,56 +719,49 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             force_separate_button=True
         ).add_to(m)
         
-        # لایه خطوط جبهه‌ها
         if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
-            fronts_fg = folium.FeatureGroup(name="مرز خطوط جبهه (Front Lines)", show=True)
+            fronts_fg = folium.FeatureGroup(name="خطوط جبهه صیادی (Fronts)", show=True)
             folium.GeoJson(
                 st.session_state.combined_fronts_gdf,
                 style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 1.0}
             ).add_to(fronts_fg)
             fronts_fg.add_to(m)
 
-        # لایه الگوی درصد احتمال PFZ در محدوده جبهه‌ها
-        if st.session_state.nc_out_list:
+        if st.session_state.role == 'admin' and st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
                 if nc_out and os.path.exists(nc_out):
                     try:
                         with xr.open_dataset(nc_out) as ds_pfz:
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
-                            
-                            front_mask = st.session_state.combined_fronts_gdf if show_pfz_in_fronts else None
-                            img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ_FrontPattern", reg_name, "jet", output_dir, front_gdf=front_mask)
-                            
+                            img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ", reg_name, "jet", output_dir)
                             if img_path and bounds and os.path.exists(img_path):
                                 encoded_img = image_to_base64(img_path)
                                 if encoded_img:
-                                    layer_title = f"🎯 الگوی درصد احتمال صید ({reg_name})" if show_pfz_in_fronts else f"پهنه کامل PFZ ({reg_name})"
-                                    folium.raster_layers.ImageOverlay(image=encoded_img, bounds=bounds, opacity=0.75, name=layer_title, show=True).add_to(m)
+                                    folium.raster_layers.ImageOverlay(image=encoded_img, bounds=bounds, opacity=0.65, name=f"PFZ Index ({reg_name})", show=False).add_to(m)
                     except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
 
-                if st.session_state.role == 'admin':
-                    if st.session_state.sst_nc_path:
-                        try:
-                            da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
-                            if da_sst is not None:
-                                img_path_sst, bounds_sst = render_pixel_perfect_heatmap(da_sst, "SST", reg_name, "coolwarm", output_dir)
-                                if img_path_sst and bounds_sst and os.path.exists(img_path_sst):
-                                    encoded_img_sst = image_to_base64(img_path_sst)
-                                    if encoded_img_sst:
-                                        folium.raster_layers.ImageOverlay(image=encoded_img_sst, bounds=bounds_sst, opacity=0.65, name=f"SST - دمای سطح دریا ({reg_name})", show=False).add_to(m)
-                        except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
+                if st.session_state.sst_nc_path:
+                    try:
+                        da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
+                        if da_sst is not None:
+                            img_path_sst, bounds_sst = render_pixel_perfect_heatmap(da_sst, "SST", reg_name, "coolwarm", output_dir)
+                            if img_path_sst and bounds_sst and os.path.exists(img_path_sst):
+                                encoded_img_sst = image_to_base64(img_path_sst)
+                                if encoded_img_sst:
+                                    folium.raster_layers.ImageOverlay(image=encoded_img_sst, bounds=bounds_sst, opacity=0.65, name=f"SST - دمای سطح دریا ({reg_name})", show=False).add_to(m)
+                    except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
 
-                    if st.session_state.chl_nc_path:
-                        try:
-                            da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
-                            if da_chl is not None:
-                                img_path_chl, bounds_chl = render_pixel_perfect_heatmap(da_chl, "Chlorophyll-a", reg_name, "YlGn", output_dir)
-                                if img_path_chl and bounds_chl and os.path.exists(img_path_chl):
-                                    encoded_img_chl = image_to_base64(img_path_chl)
-                                    if encoded_img_chl:
-                                        folium.raster_layers.ImageOverlay(image=encoded_img_chl, bounds=bounds_chl, opacity=0.65, name=f"Chlorophyll-a ({reg_name})", show=False).add_to(m)
-                        except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
+                if st.session_state.chl_nc_path:
+                    try:
+                        da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
+                        if da_chl is not None:
+                            img_path_chl, bounds_chl = render_pixel_perfect_heatmap(da_chl, "Chlorophyll-a", reg_name, "YlGn", output_dir)
+                            if img_path_chl and bounds_chl and os.path.exists(img_path_chl):
+                                encoded_img_chl = image_to_base64(img_path_chl)
+                                if encoded_img_chl:
+                                    folium.raster_layers.ImageOverlay(image=encoded_img_chl, bounds=bounds_chl, opacity=0.65, name=f"Chlorophyll-a ({reg_name})", show=False).add_to(m)
+                    except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
 
             regions_fg = folium.FeatureGroup(name="محدوده مناطق (Regions)", show=False)
             folium.GeoJson(
@@ -902,42 +770,68 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             ).add_to(regions_fg)
             regions_fg.add_to(m)
 
-        # اضافه کردن Legend راهنما به نقشه (پایین سمت چپ)
-        PFZLegend().add_to(m)
+        # ----------------------------------------------------
+        # افزودن Legend اصلاح‌شده (قرمز/گرم = عالی، آبی/سرد = کم)
+        # ----------------------------------------------------
+        legend_html = '''
+        <div style="position: fixed; 
+                    bottom: 85px; left: 20px; width: 175px; 
+                    z-index:9999; font-size:11px; background-color: rgba(255, 255, 255, 0.95); 
+                    border: 2px solid #2B5B84; border-radius: 8px; 
+                    padding: 8px; font-weight: bold; color: #1E3A8A;
+                    direction: rtl; font-family: 'Vazirmatn', sans-serif;
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
+            <div style="text-align: center; border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-bottom: 6px; font-size: 12px; font-weight: bold;">
+                🎯 پتانسیل صید (PFZ)
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
+                <span style="width: 14px; height: 14px; background: #800000; display: inline-block; border-radius: 3px;"></span>
+                <span style="flex-grow: 1; margin-right: 8px; color: #333;">عالی (بسیار بالا)</span>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
+                <span style="width: 14px; height: 14px; background: #FF0000; display: inline-block; border-radius: 3px;"></span>
+                <span style="flex-grow: 1; margin-right: 8px; color: #333;">خوب (بالا)</span>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
+                <span style="width: 14px; height: 14px; background: #00FF00; display: inline-block; border-radius: 3px;"></span>
+                <span style="flex-grow: 1; margin-right: 8px; color: #333;">متوسط</span>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
+                <span style="width: 14px; height: 14px; background: #00FFFF; display: inline-block; border-radius: 3px;"></span>
+                <span style="flex-grow: 1; margin-right: 8px; color: #333;">کم</span>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="width: 14px; height: 14px; background: #000080; display: inline-block; border-radius: 3px;"></span>
+                <span style="flex-grow: 1; margin-right: 8px; color: #333;">بسیار کم / ناچیز</span>
+            </div>
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(legend_html))
 
-        # قرار دادن باکس تاریخ اخذ داده در بالا سمت چپ (Top-Left) برای جلوگیری از هم‌پوشانی با Legend
+        # باکس نمایش تاریخ اخذ داده
         greg_str, jalali_str = parse_date_formats(st.session_state.latest_date)
         if greg_str and jalali_str:
             persian_digits = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
             jalali_str_fa = jalali_str.translate(persian_digits)
             
             date_box_html = f'''
-                <div class="date-box-container" style="position: absolute; 
-                            top: 20px; left: 60px; width: 250px; 
-                            z-index: 9999; font-size: 12px; background-color: rgba(255, 255, 255, 0.92); 
+                <div style="position: fixed; 
+                            bottom: 25px; left: 20px; width: 250px; height: 50px; 
+                            z-index:9999; font-size:12px; background-color: rgba(255, 255, 255, 0.92); 
                             border: 2px solid #2B5B84; border-radius: 6px; 
-                            padding: 6px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
-                            direction: rtl; font-family: 'Vazirmatn', sans-serif; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
+                            padding: 4px; font-weight: bold; text-align: center; color: #1E3A8A; line-height: 1.4;
+                            direction: rtl; font-family: 'Vazirmatn', sans-serif;">
                     تاریخ اخذ داده: {jalali_str_fa}<br>
-                    <span style="font-family: Arial, sans-serif; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
+                    <span style="font-family: Arial, sans-serif; color: #333333; font-size: 11px;">Data Acquisition Date: {greg_str}</span>
                 </div>
             '''
             m.get_root().html.add_child(folium.Element(date_box_html))
 
         m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
+        
         folium.LayerControl(position='topright', collapsed=True).add_to(m)
         
         st_folium(m, width=1100, height=600)
-
-        st.markdown("---")
-        st.markdown(
-            """
-            <div style="text-align: center; font-size: 0.9rem; padding: 10px 0; font-weight: bold; font-family: 'Vazirmatn', sans-serif;">
-                کلیه حقوق این سامانه متعلق به <b>پژوهشگاه ملی اقیانوس‌شناسی و علوم جوی</b> می‌باشد.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
     except Exception as map_render_err:
         st.error("⚠️ خطا در پردازش و رندر نقشه:")
