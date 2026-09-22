@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with SST layer fix and direct XArray DataArray Coordinate Shift for PFZ Alignment.
+# Description: Streamlit WebGIS application with fixed spatial masking and pure visual bounds offset for PFZ alignment.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -38,11 +38,13 @@ plt.switch_backend('Agg')
 st.set_page_config(page_title="سامانه مدیریت PFZ 🐟", page_icon="🐟", layout="wide")
 
 # ==========================================
-# تنظیمات میزان شیفت پیکسل‌های PFZ (تنظیم دستی سریع)
+# تنظیمات میزان شیفت دیداری نقشه (بر حسب درجه جغرافیایی)
 # ==========================================
-# اگر جابه‌جایی برعکس بود، علامت + یا - اعداد زیر را تغییر دهید.
-PFZ_SHIFT_X = 7.5  # میزان شیفت طول جغرافیایی (بر حسب پیکسل)
-PFZ_SHIFT_Y = 7.5  # میزان شیفت عرض جغرافیایی (بر حسب پیکسل)
+# اگر لایه رنگی نسبت به خطوط قرمز جبهه جابه‌جا است، مقادیر زیر را تغییر دهید:
+# مثبت: انتقال به سمت راست (شرق) / بالا (شمال)
+# منفی: انتقال به سمت چپ (غرب) / پایین (جنوب)
+OFFSET_LON_DEG = 0.02  # میزان شیفت طول جغرافیایی (مثلاً 0.02 درجه)
+OFFSET_LAT_DEG = 0.02  # میزان شیفت عرض جغرافیایی (مثلاً 0.02 درجه)
 
 # ==========================================
 # ۰. سیستم پایگاه داده، لاگ کاربران و احراز هویت
@@ -143,7 +145,7 @@ if "logged_in" not in st.session_state:
     st.session_state.role = ""
 
 # ==========================================
-# استایل‌دهی کلی و کنترل دسترسی کاربران
+# استایل‌دهی کلی
 # ==========================================
 st.markdown("""
     <style>
@@ -165,7 +167,7 @@ if st.session_state.logged_in and st.session_state.role != 'admin':
     """, unsafe_allow_html=True)
 
 # ==========================================
-# ذخیره و بازیابی آخرین وضعیت نقشه
+# ذخیره و بازیابی وضعیت برنامه
 # ==========================================
 def save_shared_state():
     if st.session_state.combined_fronts_gdf is not None:
@@ -218,7 +220,7 @@ def image_to_base64(path):
         return None
 
 # ==========================================
-# کلاس کنترل سفارشی نقشه (مختصات DDM، کپی، اشتراک‌گذاری)
+# کلاس کنترل سفارشی نقشه (مختصات DDM)
 # ==========================================
 class CustomMapFeatures(MacroElement):
     _template = Template("""
@@ -457,7 +459,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ==========================================
-# بدنه اصلی برنامه و منوی کناری (Sidebar)
+# بدنه اصلی برنامه
 # ==========================================
 load_shared_state()
 
@@ -470,7 +472,6 @@ if st.sidebar.button("🚪 خروج (Logout)", use_container_width=True):
 
 st.sidebar.markdown("---")
 
-# 🌓 انتخاب تم روز / شب برای نقشه
 map_theme = st.sidebar.radio("🎨 تم نقشه (Map Theme)", ["☀️ روز (Light)", "🌙 شب (Dark)"], index=0)
 
 st.sidebar.markdown("---")
@@ -549,36 +550,18 @@ if st.session_state.role == 'admin':
 # ==========================================
 # توابع پردازش جبهه و رندر حرارتی
 # ==========================================
-def shift_pfz_dataarray(da, shift_x_px=7.5, shift_y_px=7.5):
+def apply_visual_offset_to_bounds(bounds, lon_offset=0.0, lat_offset=0.0):
     """
-    اصلاح مستقیم مختصات داده‌های PFZ در سطح DataArray.
-    این تابع محورهای طول و عرض جغرافیایی را بر اساس پیکسل شیفت داده
-    تا رستر PFZ دقیقاً ۱۰۰٪ بر روی خطوط جبهه‌ها منطبق شود.
+    اعمال شیفت دیداری خالص بر روی Bounding Box لایه Folium.
+    بدون دستکاری داده‌های اصلی GIS، رستر روی نقشه جابه‌جا می‌شود.
     """
-    if da is None:
-        return None
-    try:
-        da_shifted = da.copy()
-        lat_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None)
-        lon_name = next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
-        
-        if not lat_name or not lon_name:
-            return da
-
-        lats = da_shifted[lat_name].values
-        lons = da_shifted[lon_name].values
-
-        dx = float(np.abs(lons[1] - lons[0])) if len(lons) > 1 else 0.025
-        dy = float(np.abs(lats[1] - lats[0])) if len(lats) > 1 else 0.025
-
-        # اعمال شیفت پیکسل‌ها روی لتیتود و لونگیتیود
-        da_shifted[lon_name] = lons + (shift_x_px * dx)
-        da_shifted[lat_name] = lats + (shift_y_px * dy)
-
-        return da_shifted
-    except Exception as e:
-        record_error("خطا در شیفت داده‌های PFZ", e)
-        return da
+    if not bounds:
+        return bounds
+    sw, ne = bounds
+    return [
+        [sw[0] + lat_offset, sw[1] + lon_offset],
+        [ne[0] + lat_offset, ne[1] + lon_offset]
+    ]
 
 def generate_fronts_fallback(nc_path, user_threshold, region_name):
     try:
@@ -627,7 +610,7 @@ def generate_fronts_fallback(nc_path, user_threshold, region_name):
     return None
 
 def mask_pfz_by_fronts(da, fronts_gdf, buffer_deg=0.06):
-    """برش لایه PFZ تنها در حریم/محدوده اطراف خطوط جبهه صیادی"""
+    """برش لایه PFZ تنها در حریم/محدوده اطراف خطوط جبهه صیادی با مختصات واقعی"""
     if fronts_gdf is None or fronts_gdf.empty or da is None:
         return None
     try:
@@ -685,7 +668,6 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
         return None, None
 
 def load_and_crop_dataset(nc_path, shp_path):
-    """بارگذاری هوشمند متغیرهای SST و Chlorophyll بدون جابه‌جایی یا خطا"""
     if not nc_path or not os.path.exists(nc_path): return None
     try:
         with xr.open_dataset(nc_path) as ds:
@@ -810,7 +792,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         ).add_to(m)
         
         # ----------------------------------------------------
-        # الف) رندر لایه‌های رنگی پهنه‌بندی (برای همه کاربران)
+        # الف) رندر لایه‌های رنگی پهنه‌بندی (با شیفت دیداری pure bounds)
         # ----------------------------------------------------
         if st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
@@ -818,35 +800,34 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                     try:
                         with xr.open_dataset(nc_out) as ds_pfz:
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
-                            da_pfz_raw = ds_pfz[var_key].load()
-                            
-                            # ** اعمال شیفت مستقیم مختصات PFZ **
-                            da_pfz = shift_pfz_dataarray(da_pfz_raw, shift_x_px=PFZ_SHIFT_X, shift_y_px=PFZ_SHIFT_Y)
+                            da_pfz = ds_pfz[var_key].load()
                             
                             # ۱. لایه اصلی پهنه‌بندی PFZ برای کل منطقه
                             img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ_Full", reg_name, "jet", output_dir)
                             if img_path and bounds and os.path.exists(img_path):
+                                shifted_bounds = apply_visual_offset_to_bounds(bounds, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
                                 encoded_img = image_to_base64(img_path)
                                 if encoded_img:
                                     folium.raster_layers.ImageOverlay(
                                         image=encoded_img, 
-                                        bounds=bounds, 
+                                        bounds=shifted_bounds, 
                                         opacity=0.70, 
                                         name=f"🌊 پهنه‌بندی کل منطقه - PFZ Index ({reg_name})", 
                                         show=True
                                     ).add_to(m)
 
-                            # ۲. لایه هوشمند PFZ محدود به محدوده جبهه‌ها
+                            # ۲. لایه هوشمند PFZ محدود به محدوده جبهه‌ها (ماسک‌کردن روی مختصات واقعی و دقیق)
                             if st.session_state.combined_fronts_gdf is not None:
                                 da_masked = mask_pfz_by_fronts(da_pfz, st.session_state.combined_fronts_gdf)
                                 if da_masked is not None:
                                     m_path, m_bounds = render_pixel_perfect_heatmap(da_masked, "PFZ_Fronts_Masked", reg_name, "jet", output_dir)
                                     if m_path and m_bounds and os.path.exists(m_path):
+                                        shifted_m_bounds = apply_visual_offset_to_bounds(m_bounds, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
                                         enc_masked = image_to_base64(m_path)
                                         if enc_masked:
                                             folium.raster_layers.ImageOverlay(
                                                 image=enc_masked,
-                                                bounds=m_bounds,
+                                                bounds=shifted_m_bounds,
                                                 opacity=0.85,
                                                 name=f"🎯 الگوی رنگی PFZ فقط در حریم جبهه‌ها ({reg_name})",
                                                 show=True
@@ -891,7 +872,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                     except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
 
         # ----------------------------------------------------
-        # ب) خطوط جبهه صیادی (Fronts) - قرمز رنگ و درخشان
+        # ب) خطوط جبهه صیادی (Fronts) - قرمز رنگ
         # ----------------------------------------------------
         if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
             fronts_fg = folium.FeatureGroup(name="🚩 خطوط جبهه صیادی (Front Lines - Red)", show=True)
