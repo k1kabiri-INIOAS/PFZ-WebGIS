@@ -1,5 +1,5 @@
 # File Path: app.py
-# Description: Streamlit WebGIS application with fine-tuned visual offset (0.005 deg) for alignment.
+# Description: Streamlit WebGIS application with fine-tuned visual offset and role-based layer control.
 
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE" 
@@ -142,17 +142,72 @@ if "logged_in" not in st.session_state:
     st.session_state.role = ""
 
 # ==========================================
-# استایل‌دهی کلی
+# مدیریت تم روز و شب و استایل‌دهی صفحه
 # ==========================================
-st.markdown("""
+st.sidebar.markdown("---")
+map_theme = st.sidebar.radio("🎨 تم صفحه (App Theme)", ["☀️ روز (Light)", "🌙 شب (Dark)"], index=0)
+is_dark = "شب" in map_theme
+
+dark_css = """
+    <style>
+    @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
+    .stApp, [data-testid="stSidebar"], .stMarkdown {
+        background-color: #121212 !important;
+        color: #E0E0E0 !important;
+        direction: rtl;
+        text-align: right;
+    }
+    p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input { font-family: 'Vazirmatn', sans-serif; }
+    .main-title { font-size: 2.0rem !important; color: #64B5F6 !important; font-weight: bold; margin-bottom: 1rem; text-align: right !important; }
+    .inioas-logo-topleft {
+        position: fixed;
+        top: 12px;
+        left: 20px;
+        z-index: 999999;
+        width: 100px;
+        border-radius: 8px;
+        background-color: rgba(255, 255, 255, 0.9);
+        padding: 4px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+    </style>
+"""
+
+light_css = """
     <style>
     @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
     .stApp, [data-testid="stSidebar"] { direction: rtl; text-align: right; }
     p, h1, h2, h3, h4, h5, h6, span, div, label, li, button, input { font-family: 'Vazirmatn', sans-serif; }
-    .main-title { font-size: 2.0rem !important; color: #1E3A8A; font-weight: bold; margin-bottom: 1rem; text-align: right !important; }
+    .main-title { font-size: 2.0rem !important; color: #1E3A8A !important; font-weight: bold; margin-bottom: 1rem; text-align: right !important; }
     .stMarkdown, .stSelectbox, .stSlider { text-align: right; }
+    .inioas-logo-topleft {
+        position: fixed;
+        top: 12px;
+        left: 20px;
+        z-index: 999999;
+        width: 100px;
+        border-radius: 8px;
+        background-color: #FFFFFF;
+        padding: 4px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    }
     </style>
-""", unsafe_allow_html=True)
+"""
+
+st.markdown(dark_css if is_dark else light_css, unsafe_allow_html=True)
+
+# بارگذاری و نمایش لوگوی INIOAS در بالا سمت چپ صفحه
+logo_filename = "INIOAS Logo Color-P.jpg"
+if os.path.exists(logo_filename):
+    try:
+        with open(logo_filename, "rb") as logo_file:
+            encoded_logo = base64.b64encode(logo_file.read()).decode("utf-8")
+        st.markdown(
+            f'<img src="data:image/jpeg;base64,{encoded_logo}" class="inioas-logo-topleft" alt="INIOAS Logo">',
+            unsafe_allow_html=True
+        )
+    except Exception as e:
+        pass
 
 if st.session_state.logged_in and st.session_state.role != 'admin':
     st.markdown("""
@@ -469,10 +524,6 @@ if st.sidebar.button("🚪 خروج (Logout)", use_container_width=True):
 
 st.sidebar.markdown("---")
 
-map_theme = st.sidebar.radio("🎨 تم نقشه (Map Theme)", ["☀️ روز (Light)", "🌙 شب (Dark)"], index=0)
-
-st.sidebar.markdown("---")
-
 DEFAULT_SHAPES_PATH = "default_shapes.zip"
 region_configs = {}
 
@@ -752,29 +803,24 @@ if st.session_state.role == 'admin':
                 st.success(text) if msg_type == "success" else st.error(text) if msg_type == "error" else st.info(text)
 
 # ==========================================
-# ۳. رندر نقشه تعاملی و لایه‌های رنگی PFZ
+# ۳. رندر نقشه تعاملی و کنترل سطح دسترسی لایه‌ها
 # ==========================================
 if st.session_state.analysis_done and st.session_state.combined_region_gdf is not None:
     st.markdown('<h3 style="text-align: right; color: #1E3A8A; font-weight: bold; margin-top: 1rem;">🗺️ نقشه تعاملی خطوط جبهه و لایه‌های پایه</h3>', unsafe_allow_html=True)
 
     try:
-        is_dark = "شب" in map_theme
+        user_is_admin = (st.session_state.get("role") == "admin")
         
         m = folium.Map(
-            location=[(st.session_state.miny + st.session_state.maxy)/2, (st.session_state.minx + st.session_state.maxx)/2], 
+            location=[(st.session_state.miny + st.session_state.maxy)/2 + OFFSET_LAT_DEG, (st.session_state.minx + st.session_state.maxx)/2 + OFFSET_LON_DEG], 
             zoom_start=6, 
             tiles=None
         )
         
-        if is_dark:
-            folium.TileLayer('CartoDB dark_matter', name='نقشه تاریک (Dark Mode)', show=True).add_to(m)
-            folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='تصاویر ماهواره‌ای گوگل (Satellite)', overlay=False, control=True, show=False).add_to(m)
-            folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)', show=False).add_to(m)
-        else:
-            folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)', show=True).add_to(m)
-            folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='تصاویر ماهواره‌ای گوگل (Satellite)', overlay=False, control=True, show=False).add_to(m)
-            folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google Hybrid', name='نقشه ترکیبی گوگل (Hybrid)', overlay=False, control=True, show=False).add_to(m)
-            folium.TileLayer('CartoDB dark_matter', name='نقشه تاریک (Dark Mode)', show=False).add_to(m)
+        # لایه‌های پایه استاندارد (بدون خطای API)
+        folium.TileLayer('OpenStreetMap', name='نقشه خیابانی (OSM)', show=True).add_to(m)
+        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='تصاویر ماهواره‌ای گوگل (Google Satellite)', overlay=False, control=True, show=False).add_to(m)
+        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google Hybrid', name='نقشه ترکیبی گوگل (Google Hybrid)', overlay=False, control=True, show=False).add_to(m)
 
         CustomMapFeatures().add_to(m)
         
@@ -786,7 +832,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         ).add_to(m)
         
         # ----------------------------------------------------
-        # الف) رندر لایه‌های رنگی پهنه‌بندی (با شیفت دیداری 0.005)
+        # الف) رندر لایه‌های رنگی PFZ (بر اساس سطح دسترسی کاربر)
         # ----------------------------------------------------
         if st.session_state.nc_out_list:
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
@@ -796,21 +842,22 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
                             
-                            # ۱. لایه اصلی پهنه‌بندی PFZ برای کل منطقه
-                            img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ_Full", reg_name, "jet", output_dir)
-                            if img_path and bounds and os.path.exists(img_path):
-                                shifted_bounds = apply_visual_offset_to_bounds(bounds, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
-                                encoded_img = image_to_base64(img_path)
-                                if encoded_img:
-                                    folium.raster_layers.ImageOverlay(
-                                        image=encoded_img, 
-                                        bounds=shifted_bounds, 
-                                        opacity=0.70, 
-                                        name=f"🌊 پهنه‌بندی کل منطقه - PFZ Index ({reg_name})", 
-                                        show=True
-                                    ).add_to(m)
+                            # ۱. لایه اصلی پهنه‌بندی کل منطقه (فقط برای ادمین)
+                            if user_is_admin:
+                                img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ_Full", reg_name, "jet", output_dir)
+                                if img_path and bounds and os.path.exists(img_path):
+                                    shifted_bounds = apply_visual_offset_to_bounds(bounds, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
+                                    encoded_img = image_to_base64(img_path)
+                                    if encoded_img:
+                                        folium.raster_layers.ImageOverlay(
+                                            image=encoded_img, 
+                                            bounds=shifted_bounds, 
+                                            opacity=0.70, 
+                                            name=f"🌊 پهنه‌بندی کل منطقه - PFZ Index ({reg_name})", 
+                                            show=False
+                                        ).add_to(m)
 
-                            # ۲. لایه هوشمند PFZ محدود به محدوده جبهه‌ها
+                            # ۲. لایه الگوی رنگی جدید فقط در حریم جبهه‌ها (عمومی: کاربر عادی + ادمین)
                             if st.session_state.combined_fronts_gdf is not None:
                                 da_masked = mask_pfz_by_fronts(da_pfz, st.session_state.combined_fronts_gdf)
                                 if da_masked is not None:
@@ -823,14 +870,14 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                                                 image=enc_masked,
                                                 bounds=shifted_m_bounds,
                                                 opacity=0.85,
-                                                name=f"🎯 الگوی رنگی PFZ فقط در حریم جبهه‌ها ({reg_name})",
+                                                name=f"🎯 الگوی رنگی PFZ در حریم جبهه‌ها ({reg_name})",
                                                 show=True
                                             ).add_to(m)
 
                     except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
 
-                # ۳. لایه دمای سطح دریا (SST)
-                if st.session_state.sst_nc_path:
+                # ۳. لایه دمای سطح دریا - SST (فقط ادمین)
+                if user_is_admin and st.session_state.sst_nc_path:
                     try:
                         da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
                         if da_sst is not None:
@@ -848,8 +895,8 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                                     ).add_to(m)
                     except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
 
-                # ۴. لایه کلروفیل-آ (Chlorophyll-a)
-                if st.session_state.chl_nc_path:
+                # ۴. لایه کلروفیل-آ - Chlorophyll-a (فقط ادمین)
+                if user_is_admin and st.session_state.chl_nc_path:
                     try:
                         da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
                         if da_chl is not None:
@@ -868,7 +915,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                     except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
 
         # ----------------------------------------------------
-        # ب) خطوط جبهه صیادی (Fronts) - قرمز رنگ
+        # ب) خطوط جبهه صیادی (عمومی: کاربر عادی + ادمین)
         # ----------------------------------------------------
         if st.session_state.combined_fronts_gdf is not None and not st.session_state.combined_fronts_gdf.empty:
             fronts_fg = folium.FeatureGroup(name="🚩 خطوط جبهه صیادی (Front Lines - Red)", show=True)
@@ -879,14 +926,15 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             fronts_fg.add_to(m)
 
         # ----------------------------------------------------
-        # ج) مرز مناطق
+        # ج) مرز مناطق (فقط ادمین)
         # ----------------------------------------------------
-        regions_fg = folium.FeatureGroup(name="📌 محدوده مناطق (Regions)", show=False)
-        folium.GeoJson(
-            st.session_state.combined_region_gdf,
-            style_function=lambda x: {'color': '#007BFF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
-        ).add_to(regions_fg)
-        regions_fg.add_to(m)
+        if user_is_admin and st.session_state.combined_region_gdf is not None:
+            regions_fg = folium.FeatureGroup(name="📌 محدوده مناطق (Regions)", show=False)
+            folium.GeoJson(
+                st.session_state.combined_region_gdf,
+                style_function=lambda x: {'color': '#007BFF', 'fillColor': 'transparent', 'weight': 2, 'dashArray': '5, 5'}
+            ).add_to(regions_fg)
+            regions_fg.add_to(m)
 
         # ----------------------------------------------------
         # د) Legend متناسب با تم
@@ -949,7 +997,10 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             '''
             m.get_root().html.add_child(folium.Element(date_box_html))
 
-        m.fit_bounds([[st.session_state.miny, st.session_state.minx], [st.session_state.maxy, st.session_state.maxx]])
+        m.fit_bounds([
+            [st.session_state.miny + OFFSET_LAT_DEG, st.session_state.minx + OFFSET_LON_DEG], 
+            [st.session_state.maxy + OFFSET_LAT_DEG, st.session_state.maxx + OFFSET_LON_DEG]
+        ])
         folium.LayerControl(position='topright', collapsed=True).add_to(m)
         
         st_folium(m, width=1100, height=600)
