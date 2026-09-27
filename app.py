@@ -863,39 +863,20 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         ).add_to(m)
         
 # ----------------------------------------------------
-        # الف) رندر لایه‌های رنگی PFZ (بر اساس سطح دسترسی کاربر)
-        # ----------------------------------------------------
+# الف) رندر لایه‌های رنگی PFZ (بر اساس سطح دسترسی کاربر)
+# ----------------------------------------------------
         if st.session_state.nc_out_list:
-            
-            # ۱. خواندن فایل جزایر فقط یک‌بار در ابتدا (برای سرعت بالا و جلوگیری از خطا)
-            try:
-                land_gdf = gpd.read_file("zip://Islands.zip").to_crs("EPSG:4326")
-            except Exception as e:
-                land_gdf = None
-                record_error("خطا در خواندن فایل Islands.zip", e)
-
-            # ۲. حلقه پردازش روی مناطق مختلف
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
                 if nc_out and os.path.exists(nc_out):
                     try:
-                        # خواندن فایل NetCDF
                         with xr.open_dataset(nc_out) as ds_pfz:
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
-                            
-                        # اعمال ماسک جزایر (فقط در صورتی که فایل جزایر با موفقیت خوانده شده باشد)
-                        if land_gdf is not None:
+                            land_gdf = gpd.read_file("zip://Islands.zip").to_crs("EPSG:4326")
                             da_pfz = mask_land_from_pfz(da_pfz, land_gdf)
-                            
-                        # ========================================================
-                        # در اینجا باید کدهای رندر نقشه شما (render_pixel_perfect_heatmap)
-                        # که در ادامه قرار داشتند نوشته شود. 
-                        # ========================================================
-                        
                     except Exception as e:
-                        record_error(f"خطا در پردازش لایه رنگی برای منطقه {reg_name}", e)
-        # ---------------------------------------------
-                            
+                            record_error("خطا در خواندن فایل Islands.zip", e)
+# ---------------------------------------------                            
                             # ۱. لایه اصلی پهنه‌بندی کل منطقه (فقط برای ادمین)
                             if user_is_admin:
                                 img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ_Full", reg_name, "jet", output_dir)
