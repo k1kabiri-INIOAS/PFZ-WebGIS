@@ -872,15 +872,11 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                         with xr.open_dataset(nc_out) as ds_pfz:
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
-# فرض میکنیم دا_پی‌اف‌زد را در کدتان اینجا تعریف کرده‌اید
-        # da_pfz = ds_pfz[var_key].load()
-        
-        # --- کدی که باید دقیقاً بعد از آن اضافه کنید ---
-        try:
-            land_gdf = gpd.read_file("zip://Islands.zip").to_crs("EPSG:4326")
-            da_pfz = mask_land_from_pfz(da_pfz, land_gdf)
-        except Exception as e:
-            record_error("خطا در خواندن فایل Islands.zip", e)
+                    try:
+                        land_gdf = gpd.read_file("zip://Islands.zip").to_crs("EPSG:4326")
+                            da_pfz = mask_land_from_pfz(da_pfz, land_gdf)
+                    except Exception as e:
+                            record_error("خطا در خواندن فایل Islands.zip", e)
         # ---------------------------------------------
                             
                             # ۱. لایه اصلی پهنه‌بندی کل منطقه (فقط برای ادمین)
