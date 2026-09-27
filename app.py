@@ -866,88 +866,98 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
 # الف) رندر لایه‌های رنگی PFZ (بر اساس سطح دسترسی کاربر)
 # ----------------------------------------------------
         if st.session_state.nc_out_list:
+            
+            # ۱. خواندن فایل جزایر فقط یک‌بار در ابتدا برای سرعت بیشتر
+            try:
+                land_gdf = gpd.read_file("zip://Islands.zip").to_crs("EPSG:4326")
+            except Exception as e:
+                land_gdf = None
+                record_error("خطا در خواندن فایل Islands.zip", e)
+
             for reg_name, nc_out, reg_shp_path in st.session_state.nc_out_list:
                 if nc_out and os.path.exists(nc_out):
                     try:
+                        # خواندن فایل NetCDF
                         with xr.open_dataset(nc_out) as ds_pfz:
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
-                            land_gdf = gpd.read_file("zip://Islands.zip").to_crs("EPSG:4326")
+                            
+                        # اعمال ماسک خشکی روی داده‌ها
+                        if land_gdf is not None:
                             da_pfz = mask_land_from_pfz(da_pfz, land_gdf)
-                    except Exception as e:
-                            record_error("خطا در خواندن فایل Islands.zip", e)
-# ---------------------------------------------                            
-                            # ۱. لایه اصلی پهنه‌بندی کل منطقه (فقط برای ادمین)
-                            if user_is_admin:
-                                img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ_Full", reg_name, "jet", output_dir)
-                                if img_path and bounds and os.path.exists(img_path):
-                                    shifted_bounds = apply_visual_offset_to_bounds(bounds, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
-                                    encoded_img = image_to_base64(img_path)
-                                    if encoded_img:
+                            
+                        # ۱. لایه اصلی پهنه‌بندی کل منطقه (فقط برای ادمین)
+                        if user_is_admin:
+                            img_path, bounds = render_pixel_perfect_heatmap(da_pfz, "PFZ_Full", reg_name, "jet", output_dir)
+                            if img_path and bounds and os.path.exists(img_path):
+                                shifted_bounds = apply_visual_offset_to_bounds(bounds, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
+                                encoded_img = image_to_base64(img_path)
+                                if encoded_img:
+                                    folium.raster_layers.ImageOverlay(
+                                        image=encoded_img, 
+                                        bounds=shifted_bounds, 
+                                        opacity=0.70, 
+                                        name=f"🌊 پهنه‌بندی کل منطقه - PFZ Index ({reg_name})", 
+                                        show=False
+                                    ).add_to(m)
+
+                        # ۲. لایه الگوی رنگی جدید فقط در حریم جبهه‌ها (عمومی: کاربر عادی + ادمین)
+                        if st.session_state.combined_fronts_gdf is not None:
+                            da_masked = mask_pfz_by_fronts(da_pfz, st.session_state.combined_fronts_gdf)
+                            if da_masked is not None:
+                                m_path, m_bounds = render_pixel_perfect_heatmap(da_masked, "PFZ_Fronts_Masked", reg_name, "jet", output_dir)
+                                if m_path and m_bounds and os.path.exists(m_path):
+                                    shifted_m_bounds = apply_visual_offset_to_bounds(m_bounds, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
+                                    enc_masked = image_to_base64(m_path)
+                                    if enc_masked:
                                         folium.raster_layers.ImageOverlay(
-                                            image=encoded_img, 
-                                            bounds=shifted_bounds, 
-                                            opacity=0.70, 
-                                            name=f"🌊 پهنه‌بندی کل منطقه - PFZ Index ({reg_name})", 
-                                            show=False
+                                            image=enc_masked,
+                                            bounds=shifted_m_bounds,
+                                            opacity=0.85,
+                                            name=f"🎯 الگوی رنگی PFZ در حریم جبهه‌ها ({reg_name})",
+                                            show=True
                                         ).add_to(m)
 
-                            # ۲. لایه الگوی رنگی جدید فقط در حریم جبهه‌ها (عمومی: کاربر عادی + ادمین)
-                            if st.session_state.combined_fronts_gdf is not None:
-                                da_masked = mask_pfz_by_fronts(da_pfz, st.session_state.combined_fronts_gdf)
-                                if da_masked is not None:
-                                    m_path, m_bounds = render_pixel_perfect_heatmap(da_masked, "PFZ_Fronts_Masked", reg_name, "jet", output_dir)
-                                    if m_path and m_bounds and os.path.exists(m_path):
-                                        shifted_m_bounds = apply_visual_offset_to_bounds(m_bounds, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
-                                        enc_masked = image_to_base64(m_path)
-                                        if enc_masked:
-                                            folium.raster_layers.ImageOverlay(
-                                                image=enc_masked,
-                                                bounds=shifted_m_bounds,
-                                                opacity=0.85,
-                                                name=f"🎯 الگوی رنگی PFZ در حریم جبهه‌ها ({reg_name})",
-                                                show=True
-                                            ).add_to(m)
+                    except Exception as pfz_ex: 
+                        record_error("خطا در ساخت لایه‌های PFZ", pfz_ex)
 
-                    except Exception as pfz_ex: record_error("خطا لایه PFZ", pfz_ex)
+                    # ۳. لایه دمای سطح دریا - SST (فقط ادمین)
+                    if user_is_admin and st.session_state.sst_nc_path:
+                        try:
+                            da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
+                            if da_sst is not None:
+                                img_path_sst, bounds_sst = render_pixel_perfect_heatmap(da_sst, "SST", reg_name, "coolwarm", output_dir)
+                                if img_path_sst and bounds_sst and os.path.exists(img_path_sst):
+                                    shifted_sst_bounds = apply_visual_offset_to_bounds(bounds_sst, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
+                                    encoded_img_sst = image_to_base64(img_path_sst)
+                                    if encoded_img_sst:
+                                        folium.raster_layers.ImageOverlay(
+                                            image=encoded_img_sst, 
+                                            bounds=shifted_sst_bounds, 
+                                            opacity=0.65, 
+                                            name=f"🌡️ دمای سطح دریا - SST ({reg_name})", 
+                                            show=False
+                                        ).add_to(m)
+                        except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
 
-                # ۳. لایه دمای سطح دریا - SST (فقط ادمین)
-                if user_is_admin and st.session_state.sst_nc_path:
-                    try:
-                        da_sst = load_and_crop_dataset(st.session_state.sst_nc_path, reg_shp_path)
-                        if da_sst is not None:
-                            img_path_sst, bounds_sst = render_pixel_perfect_heatmap(da_sst, "SST", reg_name, "coolwarm", output_dir)
-                            if img_path_sst and bounds_sst and os.path.exists(img_path_sst):
-                                shifted_sst_bounds = apply_visual_offset_to_bounds(bounds_sst, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
-                                encoded_img_sst = image_to_base64(img_path_sst)
-                                if encoded_img_sst:
-                                    folium.raster_layers.ImageOverlay(
-                                        image=encoded_img_sst, 
-                                        bounds=shifted_sst_bounds, 
-                                        opacity=0.65, 
-                                        name=f"🌡️ دمای سطح دریا - SST ({reg_name})", 
-                                        show=False
-                                    ).add_to(m)
-                    except Exception as sst_ex: record_error("خطا لایه SST", sst_ex)
-
-                # ۴. لایه کلروفیل-آ - Chlorophyll-a (فقط ادمین)
-                if user_is_admin and st.session_state.chl_nc_path:
-                    try:
-                        da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
-                        if da_chl is not None:
-                            img_path_chl, bounds_chl = render_pixel_perfect_heatmap(da_chl, "Chlorophyll-a", reg_name, "YlGn", output_dir)
-                            if img_path_chl and bounds_chl and os.path.exists(img_path_chl):
-                                shifted_chl_bounds = apply_visual_offset_to_bounds(bounds_chl, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
-                                encoded_img_chl = image_to_base64(img_path_chl)
-                                if encoded_img_chl:
-                                    folium.raster_layers.ImageOverlay(
-                                        image=encoded_img_chl, 
-                                        bounds=shifted_chl_bounds, 
-                                        opacity=0.65, 
-                                        name=f"🌱 غلظت کلروفیل - Chlorophyll-a ({reg_name})", 
-                                        show=False
-                                    ).add_to(m)
-                    except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
+                    # ۴. لایه کلروفیل-آ - Chlorophyll-a (فقط ادمین)
+                    if user_is_admin and st.session_state.chl_nc_path:
+                        try:
+                            da_chl = load_and_crop_dataset(st.session_state.chl_nc_path, reg_shp_path)
+                            if da_chl is not None:
+                                img_path_chl, bounds_chl = render_pixel_perfect_heatmap(da_chl, "Chlorophyll-a", reg_name, "YlGn", output_dir)
+                                if img_path_chl and bounds_chl and os.path.exists(img_path_chl):
+                                    shifted_chl_bounds = apply_visual_offset_to_bounds(bounds_chl, lon_offset=OFFSET_LON_DEG, lat_offset=OFFSET_LAT_DEG)
+                                    encoded_img_chl = image_to_base64(img_path_chl)
+                                    if encoded_img_chl:
+                                        folium.raster_layers.ImageOverlay(
+                                            image=encoded_img_chl, 
+                                            bounds=shifted_chl_bounds, 
+                                            opacity=0.65, 
+                                            name=f"🌱 غلظت کلروفیل - Chlorophyll-a ({reg_name})", 
+                                            show=False
+                                        ).add_to(m)
+                        except Exception as chl_ex: record_error("خطا لایه Chl", chl_ex)
 
         # ----------------------------------------------------
         # ب) خطوط جبهه صیادی (عمومی: کاربر عادی + ادمین)
