@@ -461,7 +461,7 @@ def log_process(msg_type, msg_text, status_obj=None):
 # صفحه ورود کاربران
 # ==========================================
 if not st.session_state.logged_in:
-    st.markdown('<div class="main-title">🌊 ورود به سامانه هوشمند مناطق مستعد صید (PFZ)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-title">🌊 ورود به سامانه هوشمند مناطق مستعد صیادی (PFZ)</div>', unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -562,7 +562,7 @@ if st.session_state.role == 'admin':
         except Exception as ex:
             record_error("خطا در استخراج شیپ‌فایل", ex)
 
-st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صید (PFZ) 🐟</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صیادی (PFZ) 🐟</div>', unsafe_allow_html=True)
 
 # ==========================================
 # بخش مدیریت و لاگ ادمین
@@ -671,6 +671,7 @@ def mask_pfz_by_fronts(da, fronts_gdf, buffer_deg=0.06):
             from shapely.vectorized import contains
             mask = contains(fronts_union, lon_grid, lat_grid)
         except ImportError:
+            from shapely.geometry import Point
             from shapely.prepared import prep
             prep_poly = prep(fronts_union)
             mask = np.array([prep_poly.contains(Point(x, y)) for x, y in zip(lon_grid.ravel(), lat_grid.ravel())]).reshape(lon_grid.shape)
@@ -681,6 +682,36 @@ def mask_pfz_by_fronts(da, fronts_gdf, buffer_deg=0.06):
     except Exception as e:
         record_error("خطا در برش لایه PFZ روی جبهه‌ها", e)
         return None
+
+# ==========================================
+# اضافه شدن تابع ماسک جزایر (جلوگیری از نمایش رنگ روی خشکی)
+# ==========================================
+def mask_land_from_pfz(da, land_gdf):
+    """حذف مقادیر شبکه از روی مناطق خشکی و جزایر"""
+    if land_gdf is None or land_gdf.empty or da is None:
+        return da
+    try:
+        lat_name, lon_name = next((d for d in da.dims if d.lower() in ['lat', 'latitude', 'y']), None), next((d for d in da.dims if d.lower() in ['lon', 'longitude', 'x']), None)
+        lats, lons = da[lat_name].values, da[lon_name].values
+        lon_grid, lat_grid = np.meshgrid(lons, lats)
+
+        land_union = land_gdf.unary_union
+        
+        try:
+            from shapely.vectorized import contains
+            land_mask = contains(land_union, lon_grid, lat_grid)
+        except ImportError:
+            from shapely.geometry import Point
+            from shapely.prepared import prep
+            prep_poly = prep(land_union)
+            land_mask = np.array([prep_poly.contains(Point(x, y)) for x, y in zip(lon_grid.ravel(), lat_grid.ravel())]).reshape(lon_grid.shape)
+
+        da_masked = da.copy()
+        da_masked.values[land_mask] = np.nan
+        return da_masked
+    except Exception as e:
+        record_error("خطا در اعمال ماسک جزایر", e)
+        return da
 
 def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
     try:
@@ -706,10 +737,10 @@ def render_pixel_perfect_heatmap(da, label, reg_name, cmap_name, out_dir):
         rgba_img = np.flipud(rgba_img)
 
         file_path = os.path.join(out_dir, f"{label}_{reg_name.replace(' ', '_')}.png")
-        Image.fromarray((rgba_img * 255.0).clip(0, 255).astype(np.uint8), 'RGBA').save(file_path)
+        Image.fromarray((rgba_img * 255).astype(np.uint8)).save(file_path)
         return file_path, [[grid_miny, grid_minx], [grid_maxy, grid_maxx]]
-    except Exception as ex:
-        record_error(f"خطا در رندر پیکسل برای {label}", ex)
+    except Exception as e:
+        record_error(f"خطا در رندر {label}", e)
         return None, None
 
 def load_and_crop_dataset(nc_path, shp_path):
@@ -841,6 +872,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                         with xr.open_dataset(nc_out) as ds_pfz:
                             var_key = "pfz_index" if "pfz_index" in ds_pfz else list(ds_pfz.data_vars.keys())[0]
                             da_pfz = ds_pfz[var_key].load()
+# فرض میکنیم دا_پی‌اف‌زد را در کدتان اینجا تعریف کرده‌اید
+        # da_pfz = ds_pfz[var_key].load()
+        
+        # --- کدی که باید دقیقاً بعد از آن اضافه کنید ---
+        try:
+            land_gdf = gpd.read_file("zip://Islands.zip").to_crs("EPSG:4326")
+            da_pfz = mask_land_from_pfz(da_pfz, land_gdf)
+        except Exception as e:
+            record_error("خطا در خواندن فایل Islands.zip", e)
+        # ---------------------------------------------
                             
                             # ۱. لایه اصلی پهنه‌بندی کل منطقه (فقط برای ادمین)
                             if user_is_admin:
@@ -921,7 +962,7 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
             fronts_fg = folium.FeatureGroup(name="🚩 خطوط جبهه صیادی (Front Lines - Red)", show=True)
             folium.GeoJson(
                 st.session_state.combined_fronts_gdf,
-                style_function=lambda x: {'color': '#FF0000', 'weight': 3.5, 'opacity': 0.95}
+                style_function=lambda x: {'color': '#000000', 'weight': 3.5, 'opacity': 0.95}
             ).add_to(fronts_fg)
             fronts_fg.add_to(m)
 
