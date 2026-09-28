@@ -562,7 +562,7 @@ if st.session_state.role == 'admin':
         except Exception as ex:
             record_error("خطا در استخراج شیپ‌فایل", ex)
 
-st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صیادی (نسخه آزمایشی) (PFZ, Beta ver.) 🐟</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صیادی (نسخه آزمایشی) (PFZ, Beta version) 🐟</div>', unsafe_allow_html=True)
 
 # ==========================================
 # بخش مدیریت و لاگ ادمین
