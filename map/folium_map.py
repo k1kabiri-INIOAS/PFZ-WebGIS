@@ -19,12 +19,7 @@ from modules.rendering import (
 from utils.dates import parse_date_formats
 from utils.logging_helpers import record_error
 
-# رنگ‌بندی جبهه بر اساس منطقه
-REGION_FRONT_COLORS = {
-    "Persian Gulf": "#FF1744",
-    "Gulf Of Oman": "#FF9100",
-    "Arabian Sea": "#D500F9",
-}
+# رنگ یکسان خطوط جبهه در همه مناطق
 DEFAULT_FRONT_COLOR = "#FF1744"
 
 
@@ -209,7 +204,7 @@ def _add_gradient_legend(m, is_dark: bool):
       </div>
       <div style="height:14px; border-radius:7px; background:{gradient};
                   border:1px solid rgba(255,255,255,0.2); box-shadow:inset 0 1px 2px rgba(0,0,0,0.2);"></div>
-      <div style="display:flex; justify-content:space-between; margin-top:5px; font-size:10px; color:{muted}; font-weight:600;">
+      <div style="display:flex; justify-content:space-between; margin-top:5px; font-size:10px; color:{muted}; font-weight:600; direction:ltr;">
         <span>بسیار کم</span>
         <span>متوسط</span>
         <span>عالی</span>
@@ -336,8 +331,15 @@ def build_pfz_map(is_dark=False):
         force_separate_button=True,
     ).add_to(m)
 
+    # MiniMap با کاشی رایگان OSM (بدون API Key)
+    minimap_tiles = folium.TileLayer(
+        tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attr="© OpenStreetMap",
+        name="minimap_base",
+        control=False,
+    )
     MiniMap(
-        tile_layer="CartoDB positron" if not is_dark else "CartoDB dark_matter",
+        tile_layer=minimap_tiles,
         position="bottomright",
         width=140,
         height=140,
@@ -471,49 +473,33 @@ def build_pfz_map(is_dark=False):
             except Exception as reg_ex:
                 record_error(f"خطا در لایه منطقه {reg_name}", reg_ex)
 
-    # ----- خطوط جبهه با هاله درخشان -----
+    # ----- خطوط جبهه با هاله درخشان (یک رنگ برای همه مناطق) -----
     fronts = st.session_state.combined_fronts_gdf
     if fronts is not None and not fronts.empty:
         fronts_fg = folium.FeatureGroup(
             name="🚩 خطوط جبهه صیادی", show=True
         )
-        # گروه‌بندی بر اساس منطقه برای رنگ متفاوت
-        if "Region" in fronts.columns:
-            for reg, sub in fronts.groupby("Region"):
-                color = REGION_FRONT_COLORS.get(
-                    str(reg).strip().title() if reg else "", DEFAULT_FRONT_COLOR
-                )
-                # نرمال‌سازی نام‌های رایج
-                reg_key = str(reg).strip() if reg else ""
-                for k, v in REGION_FRONT_COLORS.items():
-                    if k.lower() in reg_key.lower() or reg_key.lower() in k.lower():
-                        color = v
-                        break
-                halo_style, core_style = _front_style_factory(color)
-                # هاله
-                folium.GeoJson(
-                    sub,
-                    style_function=halo_style,
-                    name=f"halo_{reg}",
-                ).add_to(fronts_fg)
-                # خط اصلی
-                folium.GeoJson(
-                    sub,
-                    style_function=core_style,
-                    tooltip=folium.GeoJsonTooltip(
-                        fields=[c for c in ["Region", "Length_km", "Threshold"] if c in sub.columns],
-                        aliases=["منطقه", "طول (km)", "آستانه"],
-                        localize=True,
-                        style=(
-                            "background-color:rgba(15,23,42,0.9);color:#f8fafc;"
-                            "font-family:Vazirmatn,sans-serif;font-size:12px;padding:6px;border-radius:6px;"
-                        ),
-                    ),
-                ).add_to(fronts_fg)
-        else:
-            halo_style, core_style = _front_style_factory(DEFAULT_FRONT_COLOR)
-            folium.GeoJson(fronts, style_function=halo_style).add_to(fronts_fg)
-            folium.GeoJson(fronts, style_function=core_style).add_to(fronts_fg)
+        halo_style, core_style = _front_style_factory(DEFAULT_FRONT_COLOR)
+        # هاله
+        folium.GeoJson(fronts, style_function=halo_style).add_to(fronts_fg)
+        # خط اصلی + tooltip
+        tooltip_fields = [c for c in ["Region", "Length_km", "Threshold"] if c in fronts.columns]
+        tooltip = None
+        if tooltip_fields:
+            tooltip = folium.GeoJsonTooltip(
+                fields=tooltip_fields,
+                aliases=["منطقه", "طول (km)", "آستانه"][: len(tooltip_fields)],
+                localize=True,
+                style=(
+                    "background-color:rgba(15,23,42,0.9);color:#f8fafc;"
+                    "font-family:Vazirmatn,sans-serif;font-size:12px;padding:6px;border-radius:6px;"
+                ),
+            )
+        folium.GeoJson(
+            fronts,
+            style_function=core_style,
+            tooltip=tooltip,
+        ).add_to(fronts_fg)
         fronts_fg.add_to(m)
 
     # ----- مرز مناطق (ادمین) -----
