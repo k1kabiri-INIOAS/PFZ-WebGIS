@@ -264,13 +264,24 @@ def build_pfz_map(is_dark=False):
 
     # ----- لایه‌های پایه -----
     # پیش‌فرض: Esri Ocean / یا Carto dark بر اساس تم
+    # basemapهای رایگان بدون API Key
     if is_dark:
         folium.TileLayer(
-            tiles="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-            attr='&copy; <a href="https://carto.com/">CARTO</a>',
-            name="🌑 نقشه تیره (Carto Dark)",
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+            attr="Tiles &copy; Esri — Dark Gray Canvas",
+            name="🌑 نقشه تیره (Esri Dark)",
             show=True,
-            max_zoom=19,
+            max_zoom=16,
+        ).add_to(m)
+        # لایه برچسب تیره (اختیاری)
+        folium.TileLayer(
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+            attr="Tiles &copy; Esri",
+            name="🏷️ برچسب تیره",
+            overlay=True,
+            control=True,
+            show=True,
+            max_zoom=16,
         ).add_to(m)
     else:
         folium.TileLayer(
