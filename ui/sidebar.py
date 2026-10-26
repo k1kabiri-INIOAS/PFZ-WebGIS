@@ -23,29 +23,18 @@ def render_sidebar_user():
     st.sidebar.markdown("---")
 
 
-def _normalize_weights(weights: dict):
-    total = sum(max(0.0, float(v)) for v in weights.values())
-    if total <= 0:
-        n = max(1, len(weights))
-        return {k: 1.0 / n for k in weights}
-    return {k: max(0.0, float(v)) / total for k, v in weights.items()}
-
-
 def render_admin_controls():
     """
-    تنظیمات عوامل مدل، وزن‌ها و shapefile.
+    ساختار کلاسیک: برای هر منطقه وزن SST/Chl + آستانه.
+    عوامل اختیاری (جریان/SSH) فقط اگر ادمین روشن کند.
     Returns: (region_configs, model_options)
     """
     region_configs = {}
     model_options = {
-        "use_sst": True,
-        "use_chl": True,
         "use_current": False,
         "use_ssh": False,
-        "sst_weight": 0.40,
-        "chl_weight": 0.30,
-        "current_weight": 0.20,
-        "ssh_weight": 0.10,
+        "current_weight": 0.0,
+        "ssh_weight": 0.0,
     }
 
     if st.session_state.role != "admin":
@@ -53,85 +42,52 @@ def render_admin_controls():
 
     st.sidebar.header("⚙️ تنظیمات پردازش و مدل")
 
-    st.sidebar.subheader("🧬 عوامل مدل PFZ")
-    st.sidebar.caption(
-        "وزن‌ها مستقل‌اند و فقط روی عوامل **فعال و موفق در دانلود** نرمال می‌شوند."
-    )
+    # ---- عوامل اختیاری (پیش‌فرض خاموش = رفتار مثل قبل) ----
+    with st.sidebar.expander("➕ عوامل اختیاری (جریان / SSH)", expanded=False):
+        st.caption(
+            "به‌صورت پیش‌فرض خاموش است. اگر خاموش باشد، مدل دقیقاً مثل قبل فقط با SST و Chl کار می‌کند."
+        )
+        use_current = st.checkbox(
+            "استفاده از جریان سطحی (Currents)",
+            value=False,
+            key="use_current",
+            help="اگر دانلود fail شود، تحلیل با SST+Chl ادامه می‌یابد.",
+        )
+        use_ssh = st.checkbox(
+            "استفاده از گرادیان SSH / SLA",
+            value=False,
+            key="use_ssh",
+            help="اگر دانلود fail شود، نادیده گرفته می‌شود.",
+        )
+        cur_w = 0.0
+        ssh_w = 0.0
+        if use_current:
+            cur_w = st.slider(
+                "سهم نسبی جریان در ترکیب نهایی",
+                0.0,
+                0.5,
+                0.20,
+                0.05,
+                key="w_cur_global",
+            )
+            st.caption("این سهم از وزن SST/Chl هر منطقه به‌نسبت کم می‌شود.")
+        if use_ssh:
+            ssh_w = st.slider(
+                "سهم نسبی SSH در ترکیب نهایی",
+                0.0,
+                0.5,
+                0.10,
+                0.05,
+                key="w_ssh_global",
+            )
+            st.caption("این سهم از وزن SST/Chl هر منطقه به‌نسبت کم می‌شود.")
 
-    use_sst = st.sidebar.checkbox("SST (گرادیان حرارتی)", value=True, key="use_sst")
-    use_chl = st.sidebar.checkbox("Chlorophyll-a", value=True, key="use_chl")
-    use_current = st.sidebar.checkbox(
-        "جریان سطحی ژئوستروفیک (Currents)",
-        value=False,
-        key="use_current",
-        help="سرعت جریان از ارتفاع‌سنجی. اگر دانلود fail شود، تحلیل با بقیه عوامل ادامه می‌یابد.",
-    )
-    use_ssh = st.sidebar.checkbox(
-        "گرادیان SSH / SLA",
-        value=False,
-        key="use_ssh",
-        help="گرادیان ارتفاع سطح دریا (جبهه/ادی). اگر دانلود fail شود، نادیده گرفته می‌شود.",
-    )
-
-    if not use_sst and not use_chl:
-        st.sidebar.warning("حداقل یکی از SST یا Chlorophyll باید فعال باشد.")
-        use_sst = True
-
-    sst_w = st.sidebar.slider(
-        "وزن SST", 0.0, 1.0, 0.40, 0.05, key="w_sst_global", disabled=not use_sst
-    )
-    chl_w = st.sidebar.slider(
-        "وزن Chlorophyll-a",
-        0.0,
-        1.0,
-        0.30,
-        0.05,
-        key="w_chl_global",
-        disabled=not use_chl,
-    )
-    cur_w = st.sidebar.slider(
-        "وزن جریان (Current speed)",
-        0.0,
-        1.0,
-        0.20,
-        0.05,
-        key="w_cur_global",
-        disabled=not use_current,
-    )
-    ssh_w = st.sidebar.slider(
-        "وزن گرادیان SSH",
-        0.0,
-        1.0,
-        0.10,
-        0.05,
-        key="w_ssh_global",
-        disabled=not use_ssh,
-    )
-
-    active_w = {}
-    if use_sst:
-        active_w["SST"] = sst_w
-    if use_chl:
-        active_w["Chl"] = chl_w
-    if use_current:
-        active_w["Current"] = cur_w
-    if use_ssh:
-        active_w["SSH"] = ssh_w
-
-    norm_w = _normalize_weights(active_w)
-    norm_txt = " · ".join([f"{k}={v:.0%}" for k, v in norm_w.items()])
-    st.sidebar.info(f"وزن نرمال‌شده: {norm_txt}")
-
-    model_options = {
-        "use_sst": bool(use_sst),
-        "use_chl": bool(use_chl),
-        "use_current": bool(use_current),
-        "use_ssh": bool(use_ssh),
-        "sst_weight": float(sst_w) if use_sst else 0.0,
-        "chl_weight": float(chl_w) if use_chl else 0.0,
-        "current_weight": float(cur_w) if use_current else 0.0,
-        "ssh_weight": float(ssh_w) if use_ssh else 0.0,
-    }
+        model_options = {
+            "use_current": bool(use_current),
+            "use_ssh": bool(use_ssh),
+            "current_weight": float(cur_w) if use_current else 0.0,
+            "ssh_weight": float(ssh_w) if use_ssh else 0.0,
+        }
 
     st.sidebar.markdown("---")
     uploaded_shapefile_zip = st.sidebar.file_uploader(
@@ -160,29 +116,45 @@ def render_admin_controls():
             ]
 
             if shp_files:
-                st.sidebar.subheader("📌 آستانه حساسیت هر منطقه")
+                st.sidebar.subheader("📌 تنظیمات اختصاصی هر منطقه")
                 for shp_path in sorted(shp_files):
                     reg_name = (
                         os.path.splitext(os.path.basename(shp_path))[0]
                         .replace("_", " ")
                         .title()
                     )
+                    def_sst = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get(
+                        "sst_w", 0.60
+                    )
                     def_thresh = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get(
                         "thresh", 0.50
                     )
-                    with st.sidebar.expander(f"منطقه: {reg_name}", expanded=False):
+
+                    with st.sidebar.expander(f"منطقه: {reg_name}", expanded=True):
+                        sst_w = st.slider(
+                            f"وزن SST ({reg_name})",
+                            0.0,
+                            1.0,
+                            float(def_sst),
+                            0.05,
+                            key=f"sst_{reg_name}",
+                        )
+                        chl_w = round(1.0 - sst_w, 2)
+                        st.caption(f"وزن کلروفیل-آ: **{chl_w}**")
                         thresh = st.slider(
-                            f"آستانه جبهه ({reg_name})",
+                            f"آستانه حساسیت جبهه ({reg_name})",
                             0.1,
                             1.0,
-                            def_thresh,
+                            float(def_thresh),
                             0.05,
                             key=f"thresh_{reg_name}",
                         )
-                    region_configs[reg_name] = {
-                        "shp_path": shp_path,
-                        "threshold": float(thresh),
-                    }
+                        region_configs[reg_name] = {
+                            "shp_path": shp_path,
+                            "sst_weight": float(sst_w),
+                            "chl_weight": float(chl_w),
+                            "threshold": float(thresh),
+                        }
         except Exception as ex:
             record_error("خطا در استخراج شیپ‌فایل", ex)
             st.sidebar.error(
