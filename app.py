@@ -85,16 +85,9 @@ if st.session_state.role == "admin":
             )
         else:
             st.session_state.process_logs = []
-            # پاک‌سازی خروجی‌های قبلی تا نتیجهٔ کهنه استفاده نشود
+            # فقط پوشهٔ خروجی هر منطقه پاک می‌شود (نتیجهٔ قبلی روی صفحه می‌ماند تا اجرای جدید تمام شود)
+            # shared_state و login دست نخورده می‌مانند تا کرش/logout نشود
             import shutil
-            for _name in ("raw_sst.nc", "raw_chl.nc", "raw_current.nc", "raw_ssh.nc",
-                          "latest_fronts.geojson", "shared_state.pkl"):
-                _p = os.path.join(OUTPUT_DIR, _name)
-                try:
-                    if os.path.isfile(_p):
-                        os.remove(_p)
-                except Exception:
-                    pass
             for _reg in list(region_configs.keys()):
                 _d = os.path.join(OUTPUT_DIR, _reg.replace(" ", "_"))
                 if os.path.isdir(_d):
@@ -102,12 +95,6 @@ if st.session_state.role == "admin":
                         shutil.rmtree(_d, ignore_errors=True)
                     except Exception:
                         pass
-            # ریست وضعیت نشست
-            st.session_state.analysis_done = False
-            st.session_state.combined_fronts_gdf = None
-            st.session_state.nc_out_list = []
-            st.session_state.current_nc_path = None
-            st.session_state.ssh_nc_path = None
 
             with st.status(
                 "🚀 شروع فرآیند پردازش داده‌های مکانی چندمنطقه‌ای...", expanded=True
@@ -275,10 +262,10 @@ if st.session_state.role == "admin":
                         state="error",
                     )
                     st.error(
-                        "خطای غیرمنتظره رخ داد. در صورت تکرار، با مدیر سیستم تماس بگیرید."
+                        "خطای غیرمنتظره رخ داد. جزئیات زیر را ببینید (نشست شما قطع نمی‌شود)."
                     )
-                    # جزئیات برای ادمین (دیباگ)
                     st.exception(global_ex)
+                    # هرگز logged_in را تغییر نده
 
     if st.session_state.process_logs:
         with st.expander("📝 گزارش مختصر مراحل پردازش", expanded=False):
