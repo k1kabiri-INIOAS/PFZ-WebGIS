@@ -188,7 +188,11 @@ if st.session_state.role == "admin":
                                     (reg_name, nc_out, cfg["shp_path"])
                                 )
                                 reg_fronts_gdf = generate_fronts_fallback(
-                                    nc_out, cfg["threshold"], reg_name
+                                    nc_out,
+                                    cfg["threshold"],
+                                    reg_name,
+                                    sst_nc_path=sst_nc_path,
+                                    region_shp_path=cfg["shp_path"],
                                 )
                                 if reg_fronts_gdf is not None:
                                     all_front_gdfs.append(reg_fronts_gdf)
