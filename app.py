@@ -140,37 +140,67 @@ if st.session_state.role == "admin":
                     latest_date = fetch_result["latest_date"]
                     fetched = fetch_result.get("fetched", {})
 
-                    if model_options.get("use_current") and not fetched.get("current"):
-                        log_process(
-                            "error",
-                            "دانلود جریان ناموفق بود — ادامه با عوامل باقی‌مانده.",
-                            status,
-                        )
-                    if model_options.get("use_ssh") and not fetched.get("ssh"):
-                        log_process(
-                            "error",
-                            "دانلود SSH ناموفق بود — ادامه با عوامل باقی‌مانده.",
-                            status,
-                        )
+                    # گزارش شفاف وضعیت هر لایه
+                    if fetched.get("sst"):
+                        log_process("success", "✓ SST دانلود شد.", status)
+                    else:
+                        log_process("error", "✗ SST از سرور نیامد (fallback مصنوعی).", status)
+
+                    if fetched.get("chl"):
+                        log_process("success", "✓ Chlorophyll دانلود شد.", status)
+                    else:
+                        log_process("error", "✗ Chlorophyll از سرور نیامد (fallback مصنوعی).", status)
+
+                    if model_options.get("use_current"):
+                        if fetched.get("current") and current_nc_path:
+                            log_process("success", "✓ جریان (Currents) دانلود شد.", status)
+                        else:
+                            log_process(
+                                "error",
+                                "✗ دانلود جریان ناموفق بود — ادامه بدون Current.",
+                                status,
+                            )
+                    if model_options.get("use_ssh"):
+                        if fetched.get("ssh") and ssh_nc_path:
+                            log_process("success", "✓ SSH / SLA دانلود شد.", status)
+                        else:
+                            log_process(
+                                "error",
+                                "✗ دانلود SSH ناموفق بود — ادامه بدون SSH.",
+                                status,
+                            )
 
                     if sst_nc_path and chl_nc_path:
+                        used = ["SST", "Chl"]
+                        if model_options.get("use_current") and fetched.get("current") and current_nc_path:
+                            used.append("Current")
+                        if model_options.get("use_ssh") and fetched.get("ssh") and ssh_nc_path:
+                            used.append("SSH")
                         log_process(
                             "success",
-                            "داده‌های پایه (SST/CHL) آماده است.",
+                            f"عوامل فعال در این اجرا: {' + '.join(used)}",
                             status,
                         )
                         all_front_gdfs, nc_out_list = [], []
 
                         for reg_name, cfg in region_configs.items():
+                            _use_cur = bool(model_options.get("use_current")) and bool(current_nc_path)
+                            _use_ssh = bool(model_options.get("use_ssh")) and bool(ssh_nc_path)
+                            _extra_txt = []
+                            if _use_cur:
+                                _extra_txt.append("Current")
+                            if _use_ssh:
+                                _extra_txt.append("SSH")
+                            _extra_msg = (" + " + " + ".join(_extra_txt)) if _extra_txt else " (فقط SST+Chl)"
                             log_process(
-                                "info", f"در حال پردازش **{reg_name}**...", status
+                                "info",
+                                f"در حال پردازش **{reg_name}**{_extra_msg}...",
+                                status,
                             )
                             try:
                                 # وزن‌های منطقه‌ای (مثل قبل) + سهم اختیاری جریان/SSH
                                 _sst_w = float(cfg["sst_weight"])
                                 _chl_w = float(cfg["chl_weight"])
-                                _use_cur = bool(model_options.get("use_current")) and bool(current_nc_path)
-                                _use_ssh = bool(model_options.get("use_ssh")) and bool(ssh_nc_path)
                                 _cur_w = float(model_options.get("current_weight", 0.0)) if _use_cur else 0.0
                                 _ssh_w = float(model_options.get("ssh_weight", 0.0)) if _use_ssh else 0.0
                                 # اگر عوامل اختیاری روشن باشند، سهم‌شان از SST/Chl کم می‌شود
