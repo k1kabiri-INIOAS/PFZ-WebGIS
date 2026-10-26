@@ -24,7 +24,6 @@ def render_sidebar_user():
 
 
 def _normalize_weights(weights: dict):
-    """weights: {name: raw_value} → normalized dict summing to 1."""
     total = sum(max(0.0, float(v)) for v in weights.values())
     if total <= 0:
         n = max(1, len(weights))
@@ -34,8 +33,8 @@ def _normalize_weights(weights: dict):
 
 def render_admin_controls():
     """
-    تنظیمات مناطق، عوامل مدل و وزن‌ها.
-    برمی‌گرداند: (region_configs, model_options)
+    تنظیمات عوامل مدل، وزن‌ها و shapefile.
+    Returns: (region_configs, model_options)
     """
     region_configs = {}
     model_options = {
@@ -54,40 +53,32 @@ def render_admin_controls():
 
     st.sidebar.header("⚙️ تنظیمات پردازش و مدل")
 
-    # ---- عوامل مدل (سراسری) ----
     st.sidebar.subheader("🧬 عوامل مدل PFZ")
     st.sidebar.caption(
-        "وزن‌ها مستقل‌اند و فقط روی عوامل فعال نرمال می‌شوند (جمع = ۱)."
+        "وزن‌ها مستقل‌اند و فقط روی عوامل **فعال و موفق در دانلود** نرمال می‌شوند."
     )
 
-    use_sst = st.sidebar.checkbox("☑ SST (گرادیان حرارتی)", value=True, key="use_sst")
-    use_chl = st.sidebar.checkbox("☑ Chlorophyll-a", value=True, key="use_chl")
+    use_sst = st.sidebar.checkbox("SST (گرادیان حرارتی)", value=True, key="use_sst")
+    use_chl = st.sidebar.checkbox("Chlorophyll-a", value=True, key="use_chl")
     use_current = st.sidebar.checkbox(
-        "☐ جریان سطحی ژئوستروفیک (Currents)",
+        "جریان سطحی ژئوستروفیک (Currents)",
         value=False,
         key="use_current",
-        help="سرعت جریان از ارتفاع‌سنجی ماهواره‌ای — در صورت شکست دانلود، تحلیل با بقیه عوامل ادامه می‌یابد.",
+        help="سرعت جریان از ارتفاع‌سنجی. اگر دانلود fail شود، تحلیل با بقیه عوامل ادامه می‌یابد.",
     )
     use_ssh = st.sidebar.checkbox(
-        "☐ گرادیان SSH / SLA",
+        "گرادیان SSH / SLA",
         value=False,
         key="use_ssh",
-        help="گرادیان ارتفاع سطح دریا — مرتبط با جبهه و ادی. در صورت شکست دانلود، نادیده گرفته می‌شود.",
+        help="گرادیان ارتفاع سطح دریا (جبهه/ادی). اگر دانلود fail شود، نادیده گرفته می‌شود.",
     )
 
-    # حداقل یک عامل پایه لازم است
     if not use_sst and not use_chl:
         st.sidebar.warning("حداقل یکی از SST یا Chlorophyll باید فعال باشد.")
         use_sst = True
 
     sst_w = st.sidebar.slider(
-        "وزن SST",
-        0.0,
-        1.0,
-        0.40,
-        0.05,
-        key="w_sst_global",
-        disabled=not use_sst,
+        "وزن SST", 0.0, 1.0, 0.40, 0.05, key="w_sst_global", disabled=not use_sst
     )
     chl_w = st.sidebar.slider(
         "وزن Chlorophyll-a",
@@ -132,10 +123,10 @@ def render_admin_controls():
     st.sidebar.info(f"وزن نرمال‌شده: {norm_txt}")
 
     model_options = {
-        "use_sst": use_sst,
-        "use_chl": use_chl,
-        "use_current": use_current,
-        "use_ssh": use_ssh,
+        "use_sst": bool(use_sst),
+        "use_chl": bool(use_chl),
+        "use_current": bool(use_current),
+        "use_ssh": bool(use_ssh),
         "sst_weight": float(sst_w) if use_sst else 0.0,
         "chl_weight": float(chl_w) if use_chl else 0.0,
         "current_weight": float(cur_w) if use_current else 0.0,
@@ -188,55 +179,17 @@ def render_admin_controls():
                             0.05,
                             key=f"thresh_{reg_name}",
                         )
-                        region_configs = region_configs if False else {}  # noqa — set below
-                    # re-get in loop properly
-                region_configs = {}
-                for shp_path in sorted(shp_files):
-                    reg_name = (
-                        os.path.splitext(os.path.basename(shp_path))[0]
-                        .replace("_", " ")
-                        .title()
-                    )
-                    def_thresh = DEFAULT_REGION_DEFAULTS.get(reg_name, {}).get(
-                        "thresh", 0.50
-                    )
-                    thresh = st.session_state.get(f"thresh_{reg_name}", def_thresh)
-                    # ensure widget exists
-                    if f"thresh_{reg_name}" not in st.session_state:
-                        with st.sidebar.expander(f"منطقه: {reg_name}", expanded=False):
-                            thresh = st.slider(
-                                f"آستانه جبهه ({reg_name})",
-                                0.1,
-                                1.0,
-                                def_thresh,
-                                0.05,
-                                key=f"thresh_{reg_name}",
-                            )
-                    else:
-                        # widget already created in first loop attempt — recreate cleanly
-                        pass
                     region_configs[reg_name] = {
                         "shp_path": shp_path,
-                        "sst_weight": model_options_weight(model_options := model_options if False else None),
-                        "threshold": st.session_state.get(f"thresh_{reg_name}", def_thresh),
+                        "threshold": float(thresh),
                     }
         except Exception as ex:
             record_error("خطا در استخراج شیپ‌فایل", ex)
-            st.sidebar.error("خطا در خواندن فایل shapefile. لطفاً فایل معتبر آپلود کنید.")
+            st.sidebar.error(
+                "خطا در خواندن فایل shapefile. لطفاً فایل معتبر آپلود کنید."
+            )
 
     return region_configs, model_options
-
-
-def model_options_weight(_):
-    return 0.0
-
-
-def _normalize_weights(weights: dict):
-    total = sum(max(0.0, float(v)) for v in weights.values())
-    if total <= 0:
-        n = max(1, len(weights))
-        return {k: 1.0 / n for k in weights}
-    return {k: max(0.0, float(v)) / total for k, v in weights.items()}
 
 
 def render_admin_panel():
