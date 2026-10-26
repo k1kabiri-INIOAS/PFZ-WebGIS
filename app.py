@@ -85,6 +85,30 @@ if st.session_state.role == "admin":
             )
         else:
             st.session_state.process_logs = []
+            # پاک‌سازی خروجی‌های قبلی تا نتیجهٔ کهنه استفاده نشود
+            import shutil
+            for _name in ("raw_sst.nc", "raw_chl.nc", "raw_current.nc", "raw_ssh.nc",
+                          "latest_fronts.geojson", "shared_state.pkl"):
+                _p = os.path.join(OUTPUT_DIR, _name)
+                try:
+                    if os.path.isfile(_p):
+                        os.remove(_p)
+                except Exception:
+                    pass
+            for _reg in list(region_configs.keys()):
+                _d = os.path.join(OUTPUT_DIR, _reg.replace(" ", "_"))
+                if os.path.isdir(_d):
+                    try:
+                        shutil.rmtree(_d, ignore_errors=True)
+                    except Exception:
+                        pass
+            # ریست وضعیت نشست
+            st.session_state.analysis_done = False
+            st.session_state.combined_fronts_gdf = None
+            st.session_state.nc_out_list = []
+            st.session_state.current_nc_path = None
+            st.session_state.ssh_nc_path = None
+
             with st.status(
                 "🚀 شروع فرآیند پردازش داده‌های مکانی چندمنطقه‌ای...", expanded=True
             ) as status:
@@ -101,11 +125,7 @@ if st.session_state.role == "admin":
                     )
                     minx, miny, maxx, maxy = combined_region_gdf.total_bounds
 
-                    factors_txt = []
-                    if model_options.get("use_sst", True):
-                        factors_txt.append("SST")
-                    if model_options.get("use_chl", True):
-                        factors_txt.append("Chl")
+                    factors_txt = ["SST", "Chl"]
                     if model_options.get("use_current", False):
                         factors_txt.append("Current")
                     if model_options.get("use_ssh", False):
@@ -159,6 +179,19 @@ if st.session_state.role == "admin":
                                 "info", f"در حال پردازش **{reg_name}**...", status
                             )
                             try:
+                                # وزن‌های منطقه‌ای (مثل قبل) + سهم اختیاری جریان/SSH
+                                _sst_w = float(cfg["sst_weight"])
+                                _chl_w = float(cfg["chl_weight"])
+                                _use_cur = bool(model_options.get("use_current")) and bool(current_nc_path)
+                                _use_ssh = bool(model_options.get("use_ssh")) and bool(ssh_nc_path)
+                                _cur_w = float(model_options.get("current_weight", 0.0)) if _use_cur else 0.0
+                                _ssh_w = float(model_options.get("ssh_weight", 0.0)) if _use_ssh else 0.0
+                                # اگر عوامل اختیاری روشن باشند، سهم‌شان از SST/Chl کم می‌شود
+                                _extra = _cur_w + _ssh_w
+                                if _extra > 0 and _extra < 1.0:
+                                    _scale = 1.0 - _extra
+                                    _sst_w *= _scale
+                                    _chl_w *= _scale
                                 nc_out, _, _ = process_pfz_pipeline(
                                     shapefile_path=cfg["shp_path"],
                                     sst_nc_path=sst_nc_path,
@@ -166,18 +199,16 @@ if st.session_state.role == "admin":
                                     output_dir=os.path.join(
                                         OUTPUT_DIR, reg_name.replace(" ", "_")
                                     ),
-                                    sst_weight=model_options["sst_weight"],
-                                    chl_weight=model_options["chl_weight"],
+                                    sst_weight=_sst_w,
+                                    chl_weight=_chl_w,
                                     current_nc_path=current_nc_path,
-                                    current_weight=model_options["current_weight"],
+                                    current_weight=_cur_w,
                                     ssh_nc_path=ssh_nc_path,
-                                    ssh_weight=model_options["ssh_weight"],
-                                    use_sst=model_options["use_sst"],
-                                    use_chl=model_options["use_chl"],
-                                    use_current=model_options["use_current"]
-                                    and bool(current_nc_path),
-                                    use_ssh=model_options["use_ssh"]
-                                    and bool(ssh_nc_path),
+                                    ssh_weight=_ssh_w,
+                                    use_sst=True,
+                                    use_chl=True,
+                                    use_current=_use_cur,
+                                    use_ssh=_use_ssh,
                                 )
                             except Exception as proc_ex:
                                 record_error(f"خطا در مدل منطقه {reg_name}", proc_ex)
