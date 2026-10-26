@@ -46,24 +46,27 @@ def _load_current_speed(current_nc_path, target_da):
         return None
     with xr.open_dataset(current_nc_path) as ds:
         ds = _standardize_ds(ds.load())
-        u_var = next(
-            (
-                v
-                for v in ds.data_vars
-                if v.lower() in ("u_current", "u", "ugos", "currents_u", "uo")
-                or ("current" in v.lower() and v.lower().startswith("u"))
-            ),
-            None,
-        )
-        v_var = next(
-            (
-                v
-                for v in ds.data_vars
-                if v.lower() in ("v_current", "v", "vgos", "currents_v", "vo")
-                or ("current" in v.lower() and v.lower().startswith("v"))
-            ),
-            None,
-        )
+        names = {v.lower(): v for v in ds.data_vars}
+        u_var = None
+        v_var = None
+        for key in ("ugos", "u_current", "currents_u", "uo", "u"):
+            if key in names:
+                u_var = names[key]
+                break
+        for key in ("vgos", "v_current", "currents_v", "vo", "v"):
+            if key in names:
+                v_var = names[key]
+                break
+        if u_var is None:
+            u_var = next(
+                (v for v in ds.data_vars if v.lower().startswith("u") and "g" in v.lower()),
+                None,
+            )
+        if v_var is None:
+            v_var = next(
+                (v for v in ds.data_vars if v.lower().startswith("v") and "g" in v.lower()),
+                None,
+            )
         if u_var is None or v_var is None:
             vars_ = list(ds.data_vars.keys())
             if len(vars_) >= 2:
