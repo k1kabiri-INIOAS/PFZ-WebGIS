@@ -1,4 +1,4 @@
-# app.py — سامانه مدیریت PFZ (نسخه بازآرایی‌شده)
+# app.py — سامانه مدیریت PFZ (نسخه بازآرایی‌شده + مدل چندعاملی)
 # ساختار ماژولار: auth / map / modules / ui / utils
 
 import os
@@ -10,9 +10,15 @@ import streamlit as st
 import geopandas as gpd
 from streamlit_folium import st_folium
 
-from config import OUTPUT_DIR, MAP_HEIGHT_DESKTOP, MAP_HEIGHT_MOBILE
+from config import OUTPUT_DIR, MAP_HEIGHT_DESKTOP
 from auth import init_db
-from utils import init_session_defaults, load_shared_state, save_shared_state, record_error, log_process
+from utils import (
+    init_session_defaults,
+    load_shared_state,
+    save_shared_state,
+    record_error,
+    log_process,
+)
 from modules.fetcher import fetch_near_realtime_data
 from modules.processor import process_pfz_pipeline
 from modules.fronts import generate_fronts_fallback
@@ -59,7 +65,7 @@ if not st.session_state.logged_in:
 # --- بدنه اصلی ---
 load_shared_state()
 render_sidebar_user()
-region_configs = render_admin_controls()
+region_configs, model_options = render_admin_controls()
 
 st.markdown(
     '<div class="main-title">🌊 سامانه هوشمند تشخیص مناطق مستعد صیادی (نسخه آزمایشی) (PFZ, Beta version) 🐟</div>',
@@ -95,19 +101,55 @@ if st.session_state.role == "admin":
                     )
                     minx, miny, maxx, maxy = combined_region_gdf.total_bounds
 
+                    factors_txt = []
+                    if model_options.get("use_sst", True):
+                        factors_txt.append("SST")
+                    if model_options.get("use_chl", True):
+                        factors_txt.append("Chl")
+                    if model_options.get("use_current", False):
+                        factors_txt.append("Current")
+                    if model_options.get("use_ssh", False):
+                        factors_txt.append("SSH")
                     log_process(
                         "info",
-                        "در حال دریافت داده‌های SST و CHL از سرور NOAA/ERDDAP...",
+                        f"در حال دریافت داده از ERDDAP: {', '.join(factors_txt)} ...",
                         status,
                     )
-                    sst_nc_path, chl_nc_path, latest_date = fetch_near_realtime_data(
-                        minx, miny, maxx, maxy, OUTPUT_DIR
+
+                    fetch_result = fetch_near_realtime_data(
+                        minx,
+                        miny,
+                        maxx,
+                        maxy,
+                        OUTPUT_DIR,
+                        fetch_current=model_options.get("use_current", False),
+                        fetch_ssh=model_options.get("use_ssh", False),
                     )
+
+                    sst_nc_path = fetch_result["sst_nc_path"]
+                    chl_nc_path = fetch_result["chl_nc_path"]
+                    current_nc_path = fetch_result.get("current_nc_path")
+                    ssh_nc_path = fetch_result.get("ssh_nc_path")
+                    latest_date = fetch_result["latest_date"]
+                    fetched = fetch_result.get("fetched", {})
+
+                    if model_options.get("use_current") and not fetched.get("current"):
+                        log_process(
+                            "error",
+                            "دانلود جریان ناموفق بود — ادامه با عوامل باقی‌مانده.",
+                            status,
+                        )
+                    if model_options.get("use_ssh") and not fetched.get("ssh"):
+                        log_process(
+                            "error",
+                            "دانلود SSH ناموفق بود — ادامه با عوامل باقی‌مانده.",
+                            status,
+                        )
 
                     if sst_nc_path and chl_nc_path:
                         log_process(
                             "success",
-                            "داده‌های ماهواره‌ای با موفقیت دریافت شدند.",
+                            "داده‌های پایه (SST/CHL) آماده است.",
                             status,
                         )
                         all_front_gdfs, nc_out_list = [], []
@@ -118,20 +160,30 @@ if st.session_state.role == "admin":
                             )
                             try:
                                 nc_out, _, _ = process_pfz_pipeline(
-                                    cfg["shp_path"],
-                                    sst_nc_path,
-                                    chl_nc_path,
-                                    os.path.join(
+                                    shapefile_path=cfg["shp_path"],
+                                    sst_nc_path=sst_nc_path,
+                                    chl_nc_path=chl_nc_path,
+                                    output_dir=os.path.join(
                                         OUTPUT_DIR, reg_name.replace(" ", "_")
                                     ),
-                                    cfg["sst_weight"],
-                                    cfg["chl_weight"],
+                                    sst_weight=model_options["sst_weight"],
+                                    chl_weight=model_options["chl_weight"],
+                                    current_nc_path=current_nc_path,
+                                    current_weight=model_options["current_weight"],
+                                    ssh_nc_path=ssh_nc_path,
+                                    ssh_weight=model_options["ssh_weight"],
+                                    use_sst=model_options["use_sst"],
+                                    use_chl=model_options["use_chl"],
+                                    use_current=model_options["use_current"]
+                                    and bool(current_nc_path),
+                                    use_ssh=model_options["use_ssh"]
+                                    and bool(ssh_nc_path),
                                 )
                             except Exception as proc_ex:
                                 record_error(f"خطا در مدل منطقه {reg_name}", proc_ex)
                                 nc_out = None
 
-                            if nc_out:
+                            if nc_out and os.path.exists(nc_out):
                                 nc_out_list.append(
                                     (reg_name, nc_out, cfg["shp_path"])
                                 )
@@ -155,6 +207,8 @@ if st.session_state.role == "admin":
                         st.session_state.nc_out_list = nc_out_list
                         st.session_state.sst_nc_path = sst_nc_path
                         st.session_state.chl_nc_path = chl_nc_path
+                        st.session_state.current_nc_path = current_nc_path
+                        st.session_state.ssh_nc_path = ssh_nc_path
                         st.session_state.latest_date = latest_date
                         (
                             st.session_state.minx,
@@ -163,6 +217,7 @@ if st.session_state.role == "admin":
                             st.session_state.maxy,
                         ) = (minx, miny, maxx, maxy)
                         st.session_state.analysis_done = True
+                        st.session_state.model_options_used = model_options
 
                         save_shared_state()
                         status.update(
@@ -173,7 +228,7 @@ if st.session_state.role == "admin":
                     else:
                         log_process(
                             "error",
-                            "فایل‌های SST یا CHL دریافت نشدند. اتصال اینترنت یا دسترسی سرور را بررسی کنید.",
+                            "فایل‌های SST یا CHL دریافت نشدند.",
                             status,
                         )
                         status.update(label="پردازش متوقف شد", state="error")
@@ -181,7 +236,7 @@ if st.session_state.role == "admin":
                 except Exception as global_ex:
                     record_error("خطای کلی در جریان اجرای برنامه", global_ex)
                     status.update(
-                        label="اجرای برنامه با خطا متوقف شد — جزئیات در لاگ",
+                        label="اجرای برنامه با خطا متوقف شد",
                         state="error",
                     )
                     st.error(
@@ -205,21 +260,16 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
         unsafe_allow_html=True,
     )
 
-    # آمار تحلیلی
     render_front_stats()
-
-    # دانلود
     render_download_section()
 
     try:
         m = build_pfz_map(is_dark=is_dark)
         if m is not None:
-            # ارتفاع واکنش‌گرا: روی موبایل کوتاه‌تر
-            map_height = MAP_HEIGHT_DESKTOP
             st_folium(
                 m,
                 width="100%",
-                height=map_height,
+                height=MAP_HEIGHT_DESKTOP,
                 returned_objects=[],
                 use_container_width=True,
             )
@@ -242,8 +292,7 @@ else:
             "👈 برای شروع، از منوی تنظیمات کناری پارامترها را تنظیم کرده و دکمه **دریافت داده‌های به‌روز و اجرای تحلیل** را بزنید."
         )
 
-# فوتر سبک
 st.markdown("---")
 st.caption(
-    "سامانه PFZ · INIOAS · نسخه بازآرایی‌شده · داده ماهواره‌ای از NOAA ERDDAP"
+    "سامانه PFZ · INIOAS · مدل چندعاملی (SST / Chl / Current / SSH) · NOAA ERDDAP"
 )
