@@ -242,6 +242,8 @@ if st.session_state.role == "admin":
                     st.error(
                         "خطای غیرمنتظره رخ داد. در صورت تکرار، با مدیر سیستم تماس بگیرید."
                     )
+                    # جزئیات برای ادمین (دیباگ)
+                    st.exception(global_ex)
 
     if st.session_state.process_logs:
         with st.expander("📝 گزارش مختصر مراحل پردازش", expanded=False):
