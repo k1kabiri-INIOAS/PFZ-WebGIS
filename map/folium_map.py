@@ -306,7 +306,7 @@ def _add_date_badge(m, is_dark: bool):
     jalali_fa = (jalali_str or "").translate(persian_digits)
 
     html = f"""
-    <div style="position:fixed; bottom:28px; left:18px; z-index:9999;
+    <div style="position:fixed; bottom:12px; left:50%; transform:translateX(-50%); z-index:9999;
                 background:{bg}; border:1.5px solid {border}; border-radius:10px;
                 padding:6px 12px; min-width:200px; text-align:center;
                 box-shadow:0 4px 16px rgba(0,0,0,0.2);
