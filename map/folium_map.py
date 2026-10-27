@@ -242,38 +242,40 @@ def _add_date_badge(m, is_dark: bool):
     m.get_root().html.add_child(Element(html))
 
 
+
 def _crop_da_to_shp(da, shp_path):
-    """برش DataArray به حدود shapefile منطقه."""
     try:
         gdf = gpd.read_file(shp_path).to_crs("EPSG:4326")
-        minx, miny, maxx, maxy = gdf.total_bounds
-        lat_name = next((d for d in da.dims if d.lower() in ("lat", "latitude", "y")), None)
-        lon_name = next((d for d in da.dims if d.lower() in ("lon", "longitude", "x")), None)
+        minx, miny, maxx, maxy = map(float, gdf.total_bounds)
+        lat_name = next((d for d in da.dims if "lat" in d.lower() or d.lower() == "y"), None)
+        lon_name = next((d for d in da.dims if "lon" in d.lower() or d.lower() == "x"), None)
         if not lat_name or not lon_name:
             return da
         da = da.sortby(lat_name).sortby(lon_name)
-        # lat ممکن است نزولی باشد
-        lat_vals = da[lat_name].values
-        if len(lat_vals) > 1 and lat_vals[0] > lat_vals[-1]:
-            return da.sel(
-                {
-                    lat_name: slice(maxy + 0.1, miny - 0.1),
-                    lon_name: slice(minx - 0.1, maxx + 0.1),
-                }
-            )
-        return da.sel(
-            {
-                lat_name: slice(miny - 0.1, maxy + 0.1),
-                lon_name: slice(minx - 0.1, maxx + 0.1),
-            }
-        )
+        lat0 = float(da[lat_name].values[0])
+        lat1 = float(da[lat_name].values[-1])
+        if lat0 > lat1:
+            da = da.sel({lat_name: slice(maxy + 0.15, miny - 0.15), lon_name: slice(minx - 0.15, maxx + 0.15)})
+        else:
+            da = da.sel({lat_name: slice(miny - 0.15, maxy + 0.15), lon_name: slice(minx - 0.15, maxx + 0.15)})
+        return da
     except Exception as e:
         record_error("خطا در برش لایه به منطقه", e)
         return da
 
 
-def _da_from_current_nc(nc_path, shp_path):
-    """سرعت جریان |V| از ugos/vgos یا u_current/v_current."""
+def _normalize_dims(da):
+    rename = {}
+    for d in da.dims:
+        dl = str(d).lower()
+        if dl in ("longitude", "x") and d != "lon":
+            rename[d] = "lon"
+        if dl in ("latitude", "y") and d != "lat":
+            rename[d] = "lat"
+    return da.rename(rename) if rename else da
+
+
+def _da_from_current_nc(nc_path, shp_path=None):
     if not nc_path or not os.path.exists(nc_path):
         return None
     try:
@@ -282,33 +284,25 @@ def _da_from_current_nc(nc_path, shp_path):
             u_var = next((names[k] for k in ("ugos", "u_current", "uo", "u") if k in names), None)
             v_var = next((names[k] for k in ("vgos", "v_current", "vo", "v") if k in names), None)
             if u_var is None or v_var is None:
+                # فایل ممکن است فقط sla داشته باشد
                 return None
-            u = ds[u_var].load().squeeze()
-            v = ds[v_var].load().squeeze()
+            u = _normalize_dims(ds[u_var].load().squeeze())
+            v = _normalize_dims(ds[v_var].load().squeeze())
             while u.ndim > 2:
                 u = u.isel({u.dims[0]: 0})
             while v.ndim > 2:
                 v = v.isel({v.dims[0]: 0})
             speed = (u.astype("float64") ** 2 + v.astype("float64") ** 2) ** 0.5
             speed.name = "current_speed"
-            # یکسان‌سازی نام ابعاد
-            rename = {}
-            for d in speed.dims:
-                dl = d.lower()
-                if dl in ("longitude", "x") and d != "lon":
-                    rename[d] = "lon"
-                if dl in ("latitude", "y") and d != "lat":
-                    rename[d] = "lat"
-            if rename:
-                speed = speed.rename(rename)
-            return _crop_da_to_shp(speed, shp_path)
+            if shp_path:
+                speed = _crop_da_to_shp(speed, shp_path)
+            return speed
     except Exception as e:
         record_error("خطا بارگذاری جریان برای نقشه", e)
         return None
 
 
-def _da_from_ssh_nc(nc_path, shp_path):
-    """گرادیان |∇SLA| از فایل SSH."""
+def _da_from_ssh_nc(nc_path, shp_path=None):
     if not nc_path or not os.path.exists(nc_path):
         return None
     try:
@@ -324,18 +318,9 @@ def _da_from_ssh_nc(nc_path, shp_path):
             )
             if ssh_var is None:
                 return None
-            da = ds[ssh_var].load().squeeze()
+            da = _normalize_dims(ds[ssh_var].load().squeeze())
             while da.ndim > 2:
                 da = da.isel({da.dims[0]: 0})
-            rename = {}
-            for d in da.dims:
-                dl = d.lower()
-                if dl in ("longitude", "x") and d != "lon":
-                    rename[d] = "lon"
-                if dl in ("latitude", "y") and d != "lat":
-                    rename[d] = "lat"
-            if rename:
-                da = da.rename(rename)
             vals = np.asarray(da.values, dtype=float)
             finite = np.isfinite(vals)
             if not finite.any():
@@ -345,10 +330,40 @@ def _da_from_ssh_nc(nc_path, shp_path):
             dy, dx = np.gradient(filled)
             grad = np.sqrt(dx ** 2 + dy ** 2)
             grad_da = xr.DataArray(grad, coords=da.coords, dims=da.dims, name="ssh_grad")
-            return _crop_da_to_shp(grad_da, shp_path)
+            if shp_path:
+                grad_da = _crop_da_to_shp(grad_da, shp_path)
+            return grad_da
     except Exception as e:
         record_error("خطا بارگذاری SSH برای نقشه", e)
         return None
+
+
+def _add_raster_overlay(m, da, label, reg_name, cmap_name, show=False):
+    """ساخت ImageOverlay و افزودن به نقشه. True اگر موفق."""
+    if da is None:
+        return False
+    try:
+        img_path, bounds = render_pixel_perfect_heatmap(
+            da, label, reg_name, cmap_name, OUTPUT_DIR, alpha=0.78
+        )
+        if not img_path or not bounds or not os.path.exists(img_path):
+            return False
+        shifted = apply_visual_offset_to_bounds(bounds, OFFSET_LON_DEG, OFFSET_LAT_DEG)
+        encoded = image_to_base64(img_path)
+        if not encoded:
+            return False
+        folium.raster_layers.ImageOverlay(
+            image=encoded,
+            bounds=shifted,
+            opacity=1.0,
+            name=label if reg_name == "ALL" else f"{label} ({reg_name})",
+            show=show,
+            interactive=False,
+        ).add_to(m)
+        return True
+    except Exception as e:
+        record_error(f"خطا overlay {label}", e)
+        return False
 
 
 
@@ -593,6 +608,59 @@ def build_pfz_map(is_dark=False):
 
             except Exception as reg_ex:
                 record_error(f"خطا در لایه منطقه {reg_name}", reg_ex)
+
+    # ----- لایه‌های اختیاری سراسری (جریان / SSH / SST / Chl) برای ادمین -----
+    if user_is_admin:
+        added = []
+        cur_path = st.session_state.get("current_nc_path")
+        ssh_path = st.session_state.get("ssh_nc_path")
+        sst_path = st.session_state.get("sst_nc_path")
+        chl_path = st.session_state.get("chl_nc_path")
+
+        # یک لایه سراسری (کل محدوده) — ساده‌تر و مطمئن‌تر از per-region
+        if cur_path and os.path.exists(cur_path):
+            da_cur = _da_from_current_nc(cur_path, None)
+            if _add_raster_overlay(m, da_cur, "سرعت جریان", "ALL", "current", show=False):
+                added.append("جریان")
+        if ssh_path and os.path.exists(ssh_path):
+            da_ssh = _da_from_ssh_nc(ssh_path, None)
+            if _add_raster_overlay(m, da_ssh, "گرادیان SSH", "ALL", "ssh", show=False):
+                added.append("SSH")
+        if sst_path and os.path.exists(sst_path):
+            try:
+                da_sst = load_and_crop_dataset(sst_path, None) if False else None
+                # بارگذاری مستقیم
+                with xr.open_dataset(sst_path) as ds:
+                    v = next((x for x in ds.data_vars if "sst" in x.lower() or "temp" in x.lower()), list(ds.data_vars)[0])
+                    da_sst = _normalize_dims(ds[v].load().squeeze())
+                    while da_sst.ndim > 2:
+                        da_sst = da_sst.isel({da_sst.dims[0]: 0})
+                if _add_raster_overlay(m, da_sst, "SST", "ALL", "sst", show=False):
+                    added.append("SST")
+            except Exception as e:
+                record_error("لایه SST سراسری", e)
+        if chl_path and os.path.exists(chl_path):
+            try:
+                with xr.open_dataset(chl_path) as ds:
+                    v = next((x for x in ds.data_vars if "chl" in x.lower() or "chlor" in x.lower()), list(ds.data_vars)[0])
+                    da_chl = _normalize_dims(ds[v].load().squeeze())
+                    while da_chl.ndim > 2:
+                        da_chl = da_chl.isel({da_chl.dims[0]: 0})
+                if _add_raster_overlay(m, da_chl, "Chlorophyll", "ALL", "chl", show=False):
+                    added.append("Chl")
+            except Exception as e:
+                record_error("لایه Chl سراسری", e)
+
+        # وضعیت برای ادمین (زیر نقشه دیده می‌شود)
+        st.session_state["_overlay_status"] = {
+            "current_path": cur_path,
+            "current_exists": bool(cur_path and os.path.exists(cur_path)) if cur_path else False,
+            "ssh_path": ssh_path,
+            "ssh_exists": bool(ssh_path and os.path.exists(ssh_path)) if ssh_path else False,
+            "sst_exists": bool(sst_path and os.path.exists(sst_path)) if sst_path else False,
+            "chl_exists": bool(chl_path and os.path.exists(chl_path)) if chl_path else False,
+            "added": added,
+        }
 
     # ----- خطوط جبهه با هاله درخشان (یک رنگ برای همه مناطق) -----
     fronts = st.session_state.combined_fronts_gdf
