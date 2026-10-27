@@ -159,273 +159,138 @@ class CustomMapFeatures(MacroElement):
         super().__init__()
 
 
-def _front_style_factory(color):
-    """استایل خطوط جبهه با هاله درخشان (دو لایه)."""
-
-    def core_style(feature):
-        return {
-            "color": color,
-            "weight": 2.8,
-            "opacity": 0.95,
-            "lineCap": "round",
-            "lineJoin": "round",
-        }
-
-    def halo_style(feature):
-        return {
-            "color": color,
-            "weight": 7,
-            "opacity": 0.28,
-            "lineCap": "round",
-            "lineJoin": "round",
-        }
-
-    return halo_style, core_style
 
 
-def _legend_box(
-    legend_id,
-    title,
-    gradient,
-    low_label,
-    mid_label,
-    high_label,
-    bottom_px,
-    is_dark,
-    border_color=None,
-    extra_html="",
-    initially_visible=False,
-):
-    bg = "rgba(15, 23, 42, 0.92)" if is_dark else "rgba(255, 255, 255, 0.95)"
-    fg = "#f1f5f9" if is_dark else "#0f172a"
-    muted = "#94a3b8" if is_dark else "#475569"
-    border = border_color or ("#38bdf8" if is_dark else "#0284c7")
-    display = "block" if initially_visible else "none"
-    return f"""
-    <div id="{legend_id}" style="display:{display}; position:fixed; bottom:{bottom_px}px; left:18px; z-index:9999;
-                background:{bg}; border:1.5px solid {border}; border-radius:12px;
-                padding:10px 12px; width:220px;
-                box-shadow:0 6px 20px rgba(0,0,0,0.25);
-                font-family:'Vazirmatn', system-ui, sans-serif; direction:rtl; color:{fg};">
-      <div style="text-align:center; font-weight:800; font-size:12px; margin-bottom:8px;">
-        {title}
-      </div>
-      <div style="height:14px; border-radius:7px; background:{gradient};
-                  border:1px solid rgba(255,255,255,0.2);"></div>
-      <div style="display:flex; justify-content:space-between; margin-top:5px; font-size:10px; color:{muted}; font-weight:600; direction:ltr;">
-        <span>{low_label}</span>
-        <span>{mid_label}</span>
-        <span>{high_label}</span>
-      </div>
-      {extra_html}
-    </div>
+class DynamicLegends(MacroElement):
     """
+    لجندهای PFZ / جریان / SSH / SST / Chl به‌صورت L.Control داخل نقشه.
+    فقط وقتی لایهٔ متناظر در LayerControl تیک خورده باشد نمایش داده می‌شوند.
+    """
+
+    _template = Template(
+        """
+    {% macro script(this, kwargs) %}
+    var map = {{ this._parent.get_name() }};
+    var available = {{ this.available_json }};
+    var isDark = {{ this.is_dark_js }};
+
+    var GRAD = {
+      pfz: "linear-gradient(90deg,#0B1D36 0%,#0D3B66 12%,#1A6B9A 25%,#1B9E77 40%,#5CB85C 55%,#E6C229 70%,#F4A261 85%,#9B2226 100%)",
+      current: "linear-gradient(90deg,#0B132B 0%,#1C2541 16%,#3A506B 33%,#5BC0BE 50%,#6FFFE9 66%,#F0F3BD 83%,#F4D35E 100%)",
+      ssh: "linear-gradient(90deg,#1A0A2E 0%,#2D1B4E 16%,#5B2C6F 33%,#9B59B6 50%,#E8A0BF 66%,#F7DC6F 83%,#FCF3CF 100%)",
+      sst: "linear-gradient(90deg,#023E8A 0%,#0077B6 14%,#00B4D8 28%,#90E0EF 42%,#CAF0F8 56%,#FEEAAB 70%,#F4A261 84%,#9B2226 100%)",
+      chl: "linear-gradient(90deg,#0D1B0F 0%,#1B4332 16%,#2D6A4F 33%,#40916C 50%,#52B788 66%,#95D5B2 83%,#F0FFF0 100%)"
+    };
+    var META = {
+      pfz: {title: "🎯 پتانسیل صید (PFZ)", lo: "بسیار کم", mid: "متوسط", hi: "عالی", border: isDark ? "#38bdf8" : "#0284c7"},
+      current: {title: "🌀 سرعت جریان", lo: "ضعیف", mid: "متوسط", hi: "قوی", border: "#5BC0BE"},
+      ssh: {title: "📶 گرادیان SSH", lo: "کم", mid: "متوسط", hi: "زیاد", border: "#9B59B6"},
+      sst: {title: "🌡️ دمای سطح آب (SST)", lo: "سرد", mid: "متوسط", hi: "گرم", border: "#00B4D8"},
+      chl: {title: "🌿 کلروفیل-آ", lo: "کم", mid: "متوسط", hi: "زیاد", border: "#40916C"}
+    };
+
+    function keyFromName(name) {
+      if (!name) return null;
+      var n = String(name);
+      if (n.indexOf("پتانسیل") !== -1 || n.indexOf("پهنه‌بندی") !== -1 || n.indexOf("PFZ") !== -1) return "pfz";
+      if (n.indexOf("جریان") !== -1) return "current";
+      if (n.indexOf("SSH") !== -1) return "ssh";
+      if (n.indexOf("SST") !== -1) return "sst";
+      if (n.indexOf("Chlorophyll") !== -1 || n.indexOf("کلروفیل") !== -1 || n.indexOf("Chl") !== -1) return "chl";
+      return null;
+    }
+
+    function readActive() {
+      var active = {pfz:false, current:false, ssh:false, sst:false, chl:false};
+      try {
+        var labels = document.querySelectorAll(".leaflet-control-layers-overlays label");
+        labels.forEach(function(lab) {
+          var cb = lab.querySelector("input[type=checkbox]");
+          if (!cb || !cb.checked) return;
+          var k = keyFromName(lab.textContent || "");
+          if (k) active[k] = true;
+        });
+      } catch (e) {}
+      return active;
+    }
+
+    var LegendCtl = L.Control.extend({
+      options: { position: "bottomleft" },
+      onAdd: function() {
+        var wrap = L.DomUtil.create("div", "pfz-dynamic-legends");
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:8px;max-width:230px;";
+        L.DomEvent.disableClickPropagation(wrap);
+        this._wrap = wrap;
+        this.redraw();
+        return wrap;
+      },
+      redraw: function() {
+        if (!this._wrap) return;
+        var active = readActive();
+        var bg = isDark ? "rgba(15,23,42,0.92)" : "rgba(255,255,255,0.95)";
+        var fg = isDark ? "#f1f5f9" : "#0f172a";
+        var muted = isDark ? "#94a3b8" : "#475569";
+        var html = "";
+        ["pfz","current","ssh","sst","chl"].forEach(function(k) {
+          if (!available[k] || !active[k]) return;
+          var m = META[k];
+          html += '<div style="background:' + bg + ';border:1.5px solid ' + m.border +
+            ';border-radius:12px;padding:10px 12px;width:220px;box-shadow:0 6px 20px rgba(0,0,0,0.25);' +
+            'font-family:Vazirmatn,system-ui,sans-serif;direction:rtl;color:' + fg + ';">' +
+            '<div style="text-align:center;font-weight:800;font-size:12px;margin-bottom:8px;">' + m.title + '</div>' +
+            '<div style="height:14px;border-radius:7px;background:' + GRAD[k] +
+            ';border:1px solid rgba(255,255,255,0.2);"></div>' +
+            '<div style="display:flex;justify-content:space-between;margin-top:5px;font-size:10px;color:' +
+            muted + ';font-weight:600;direction:ltr;"><span>' + m.lo + '</span><span>' + m.mid +
+            '</span><span>' + m.hi + '</span></div>';
+          if (k === "pfz") {
+            html += '<div style="margin-top:8px;padding-top:6px;border-top:1px solid rgba(148,163,184,0.35);font-size:10px;color:' +
+              muted + ';"><span style="display:inline-block;width:18px;height:3px;background:#FF1744;border-radius:2px;vertical-align:middle;margin-left:6px;box-shadow:0 0 6px #FF1744;"></span>خطوط جبهه صیادی</div>';
+          }
+          html += '</div>';
+        });
+        this._wrap.innerHTML = html;
+      }
+    });
+
+    var legendCtl = new LegendCtl();
+    map.addControl(legendCtl);
+
+    function refresh() { try { legendCtl.redraw(); } catch (e) {} }
+
+    map.on("overlayadd", function() { setTimeout(refresh, 20); });
+    map.on("overlayremove", function() { setTimeout(refresh, 20); });
+
+    setTimeout(function() {
+      try {
+        var root = document.querySelector(".leaflet-control-layers");
+        if (root) {
+          root.addEventListener("click", function() { setTimeout(refresh, 40); });
+          root.addEventListener("change", function() { setTimeout(refresh, 40); });
+        }
+      } catch (e) {}
+      refresh();
+    }, 300);
+    setTimeout(refresh, 800);
+    setTimeout(refresh, 1600);
+    {% endmacro %}
+    """
+    )
+
+    def __init__(self, available, is_dark=False):
+        super(DynamicLegends, self).__init__()
+        self._name = "DynamicLegends"
+        # available: dict {pfz: true, current: true, ...}
+        import json
+        flags = {k: True for k in (available or ["pfz"])}
+        self.available_json = json.dumps(flags)
+        self.is_dark_js = "true" if is_dark else "false"
 
 
 def _add_gradient_legend(m, is_dark: bool, available=None):
-    """
-    لجندها همیشه در DOM هستند ولی فقط وقتی لایهٔ متناظر روشن باشد دیده می‌شوند.
-    available: set از کلیدهای موجود مثل {'current','ssh','sst','chl','pfz'}
-    """
+    """لجند پویا وابسته به روشن بودن لایه."""
     available = available or {"pfz"}
-    muted = "#94a3b8" if is_dark else "#475569"
-
-    grads = {
-        "pfz": (
-            "linear-gradient(90deg, #0B1D36 0%, #0D3B66 12%, #1A6B9A 25%, #1B9E77 40%, "
-            "#5CB85C 55%, #E6C229 70%, #F4A261 85%, #9B2226 100%)"
-        ),
-        "current": (
-            "linear-gradient(90deg, #0B132B 0%, #1C2541 16%, #3A506B 33%, "
-            "#5BC0BE 50%, #6FFFE9 66%, #F0F3BD 83%, #F4D35E 100%)"
-        ),
-        "ssh": (
-            "linear-gradient(90deg, #1A0A2E 0%, #2D1B4E 16%, #5B2C6F 33%, "
-            "#9B59B6 50%, #E8A0BF 66%, #F7DC6F 83%, #FCF3CF 100%)"
-        ),
-        "sst": (
-            "linear-gradient(90deg, #023E8A 0%, #0077B6 14%, #00B4D8 28%, #90E0EF 42%, "
-            "#CAF0F8 56%, #FEEAAB 70%, #F4A261 84%, #9B2226 100%)"
-        ),
-        "chl": (
-            "linear-gradient(90deg, #0D1B0F 0%, #1B4332 16%, #2D6A4F 33%, "
-            "#40916C 50%, #52B788 66%, #95D5B2 83%, #F0FFF0 100%)"
-        ),
-    }
-
-    front_note = f"""
-      <div style="margin-top:8px; padding-top:6px; border-top:1px solid rgba(148,163,184,0.35); font-size:10px; color:{muted};">
-        <span style="display:inline-block;width:18px;height:3px;background:#FF1744;border-radius:2px;vertical-align:middle;margin-left:6px;box-shadow:0 0 6px #FF1744;"></span>
-        خطوط جبهه صیادی
-      </div>
-    """
-
-    # موقعیت‌های ثابت (از پایین) — با JS جابه‌جا نمی‌شوند؛ فقط show/hide
-    specs = []
-    if "pfz" in available:
-        specs.append(
-            (
-                "legend-pfz",
-                "🎯 پتانسیل صید (PFZ)",
-                grads["pfz"],
-                "بسیار کم",
-                "متوسط",
-                "عالی",
-                90,
-                "#38bdf8" if is_dark else "#0284c7",
-                front_note,
-                True,  # PFZ نزدیک جبهه معمولاً پیش‌فرض روشن است
-            )
-        )
-    bottom = 200
-    for key, title, labels, border, init in [
-        ("current", "🌀 سرعت جریان", ("ضعیف", "متوسط", "قوی"), "#5BC0BE", False),
-        ("ssh", "📶 گرادیان SSH", ("کم", "متوسط", "زیاد"), "#9B59B6", False),
-        ("sst", "🌡️ دمای سطح آب (SST)", ("سرد", "متوسط", "گرم"), "#00B4D8", False),
-        ("chl", "🌿 کلروفیل-آ", ("کم", "متوسط", "زیاد"), "#40916C", False),
-    ]:
-        if key not in available:
-            continue
-        specs.append(
-            (
-                f"legend-{key}",
-                title,
-                grads[key],
-                labels[0],
-                labels[1],
-                labels[2],
-                bottom,
-                border,
-                "",
-                init,
-            )
-        )
-        bottom += 100
-
-    for lid, title, grad, lo, mid, hi, bot, border, extra, init in specs:
-        m.get_root().html.add_child(
-            Element(
-                _legend_box(
-                    lid, title, grad, lo, mid, hi, bot, is_dark, border, extra, init
-                )
-            )
-        )
-
-    # JS: نمایش/مخفی‌سازی لجند با روشن/خاموش شدن لایه
-    # نام لایه‌ها باید با overlay name در ImageOverlay/FeatureGroup هم‌خوان باشد
-    js = """
-    <script>
-    (function() {
-      function findMap() {
-        for (var k in window) {
-          try {
-            if (window[k] && window[k] instanceof L.Map) return window[k];
-          } catch (e) {}
-        }
-        return null;
-      }
-
-      function layerKey(name) {
-        if (!name) return null;
-        var n = String(name);
-        if (n.indexOf('پتانسیل') >= 0 || n.indexOf('پهنه‌بندی') >= 0 || n.indexOf('PFZ') >= 0) return 'pfz';
-        if (n.indexOf('جریان') >= 0 || n.toLowerCase().indexOf('current') >= 0) return 'current';
-        if (n.indexOf('SSH') >= 0 || n.indexOf('گرادیان') >= 0) return 'ssh';
-        if (n.indexOf('SST') >= 0 || n.indexOf('دما') >= 0) return 'sst';
-        if (n.indexOf('Chlorophyll') >= 0 || n.indexOf('کلروفیل') >= 0 || n.indexOf('Chl') >= 0) return 'chl';
-        if (n.indexOf('جبهه صیادی') >= 0) return 'fronts';
-        return null;
-      }
-
-      var active = {pfz: false, current: false, ssh: false, sst: false, chl: false};
-
-      function refreshLegends() {
-        ['pfz','current','ssh','sst','chl'].forEach(function(k) {
-          var el = document.getElementById('legend-' + k);
-          if (!el) return;
-          el.style.display = active[k] ? 'block' : 'none';
-        });
-        // چیدمان عمودی مجدد تا جای خالی نماند
-        var order = ['pfz','current','ssh','sst','chl'];
-        var y = 90;
-        order.forEach(function(k) {
-          var el = document.getElementById('legend-' + k);
-          if (!el || el.style.display === 'none') return;
-          el.style.bottom = y + 'px';
-          y += 100;
-        });
-      }
-
-      function bind(map) {
-        // وضعیت اولیه از لایه‌های روشن
-        map.eachLayer(function(layer) {
-          var name = layer.options && layer.options.name;
-          // FeatureGroup / ImageOverlay
-          if (!name && layer.eachLayer) {
-            // skip
-          }
-        });
-        // Layer Control overlays: listen add/remove
-        map.on('overlayadd', function(e) {
-          var k = layerKey(e.name);
-          if (k && k !== 'fronts') { active[k] = true; refreshLegends(); }
-        });
-        map.on('overlayremove', function(e) {
-          var k = layerKey(e.name);
-          if (!k || k === 'fronts') return;
-          // اگر چند لایه PFZ داریم، فقط وقتی همه خاموش شدند لجند را ببند
-          if (k === 'pfz') {
-            var any = false;
-            // بررسی checkboxهای layer control
-            try {
-              var labels = document.querySelectorAll('.leaflet-control-layers-overlays label');
-              labels.forEach(function(lab) {
-                var t = lab.textContent || '';
-                var cb = lab.querySelector('input');
-                if (cb && cb.checked && (t.indexOf('پتانسیل') >= 0 || t.indexOf('پهنه‌بندی') >= 0 || t.indexOf('PFZ') >= 0)) {
-                  any = true;
-                }
-              });
-            } catch (err) {}
-            active.pfz = any;
-          } else {
-            active[k] = false;
-          }
-          refreshLegends();
-        });
-
-        // همگام‌سازی اولیه با checkboxهای روشن
-        setTimeout(function() {
-          try {
-            var labels = document.querySelectorAll('.leaflet-control-layers-overlays label');
-            active = {pfz: false, current: false, ssh: false, sst: false, chl: false};
-            labels.forEach(function(lab) {
-              var t = lab.textContent || '';
-              var cb = lab.querySelector('input');
-              if (!cb || !cb.checked) return;
-              var k = layerKey(t);
-              if (k && k !== 'fronts') active[k] = true;
-            });
-            refreshLegends();
-          } catch (err) {}
-        }, 400);
-      }
-
-      var tries = 0;
-      var timer = setInterval(function() {
-        var map = findMap();
-        tries++;
-        if (map) {
-          clearInterval(timer);
-          bind(map);
-        } else if (tries > 40) {
-          clearInterval(timer);
-        }
-      }, 250);
-    })();
-    </script>
-    """
-    m.get_root().html.add_child(Element(js))
+    m.add_child(DynamicLegends(available, is_dark=is_dark))
 
 
 
