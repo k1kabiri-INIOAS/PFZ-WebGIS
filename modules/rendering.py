@@ -144,8 +144,28 @@ def render_pixel_perfect_heatmap(
 
         da = da.sortby(lat_name, ascending=True).sortby(lon_name, ascending=True)
         data = np.asarray(da.values, dtype=float).copy()
-        lats = da[lat_name].values
-        lons = da[lon_name].values
+        # اطمینان از 2بعدی بودن (جلوگیری از خطای PIL: (1,1,N,4))
+        data = np.squeeze(data)
+        if data.ndim == 1:
+            # غیرقابل رندر به‌صورت نقشه
+            return None, None
+        if data.ndim > 2:
+            data = data.reshape(data.shape[-2], data.shape[-1])
+        if data.ndim != 2 or min(data.shape) < 2:
+            return None, None
+
+        lats = np.asarray(da[lat_name].values).ravel()
+        lons = np.asarray(da[lon_name].values).ravel()
+        # هم‌اندازه کردن با data
+        if len(lats) != data.shape[0]:
+            lats = lats[: data.shape[0]] if len(lats) >= data.shape[0] else lats
+        if len(lons) != data.shape[1]:
+            lons = lons[: data.shape[1]] if len(lons) >= data.shape[1] else lons
+        if len(lats) < 2 or len(lons) < 2:
+            return None, None
+        if data.shape[0] != len(lats) or data.shape[1] != len(lons):
+            # truncate data to coords
+            data = data[: len(lats), : len(lons)]
 
         grid_miny, grid_maxy = float(np.nanmin(lats)), float(np.nanmax(lats))
         grid_minx, grid_maxx = float(np.nanmin(lons)), float(np.nanmax(lons))
@@ -181,11 +201,14 @@ def render_pixel_perfect_heatmap(
             pass
 
         rgba_img = np.flipud(rgba)
+        if rgba_img.ndim != 3 or rgba_img.shape[-1] != 4:
+            return None, None
+        img_u8 = np.ascontiguousarray((np.clip(rgba_img, 0, 1) * 255).astype(np.uint8))
 
         os.makedirs(out_dir, exist_ok=True)
         safe_name = reg_name.replace(" ", "_")
         file_path = os.path.join(out_dir, f"{label}_{safe_name}.png")
-        Image.fromarray((rgba_img * 255).astype(np.uint8)).save(file_path)
+        Image.fromarray(img_u8, mode="RGBA").save(file_path)
         return file_path, [[grid_miny, grid_minx], [grid_maxy, grid_maxx]]
     except Exception as e:
         record_error(f"خطا در رندر {label}", e)
