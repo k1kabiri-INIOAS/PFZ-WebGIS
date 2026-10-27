@@ -242,6 +242,82 @@ def _add_date_badge(m, is_dark: bool):
     m.get_root().html.add_child(Element(html))
 
 
+def _da_from_current_nc(nc_path, shp_path):
+    """سرعت جریان |V| از فایل ugos/vgos یا u_current/v_current."""
+    if not nc_path or not os.path.exists(nc_path):
+        return None
+    try:
+        with xr.open_dataset(nc_path) as ds:
+            names = {v.lower(): v for v in ds.data_vars}
+            u_var = next((names[k] for k in ("ugos", "u_current", "uo", "u") if k in names), None)
+            v_var = next((names[k] for k in ("vgos", "v_current", "vo", "v") if k in names), None)
+            if u_var is None or v_var is None:
+                return None
+            u = ds[u_var].squeeze()
+            v = ds[v_var].squeeze()
+            while u.ndim > 2:
+                u = u.isel({u.dims[0]: 0})
+            while v.ndim > 2:
+                v = v.isel({v.dims[0]: 0})
+            speed = (u.astype("float64") ** 2 + v.astype("float64") ** 2) ** 0.5
+            speed.name = "current_speed"
+            # crop via existing helper by writing temp — or reuse load path
+            tmp = os.path.join(OUTPUT_DIR, "_tmp_current_speed.nc")
+            speed.to_netcdf(tmp)
+            da = load_and_crop_dataset(tmp, shp_path)
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            return da
+    except Exception as e:
+        record_error("خطا بارگذاری جریان برای نقشه", e)
+        return None
+
+
+def _da_from_ssh_nc(nc_path, shp_path):
+    """گرادیان |∇SLA| از فایل SSH."""
+    if not nc_path or not os.path.exists(nc_path):
+        return None
+    try:
+        with xr.open_dataset(nc_path) as ds:
+            ssh_var = next(
+                (
+                    v
+                    for v in ds.data_vars
+                    if any(k in v.lower() for k in ("sla", "ssh", "adt", "height", "anomaly"))
+                ),
+                None,
+            )
+            if ssh_var is None:
+                return None
+            da = ds[ssh_var].squeeze()
+            while da.ndim > 2:
+                da = da.isel({da.dims[0]: 0})
+            vals = da.astype("float64").values
+            import numpy as np
+            finite = np.isfinite(vals)
+            if not finite.any():
+                return None
+            fill = float(np.nanmean(vals[finite]))
+            filled = np.where(finite, vals, fill)
+            dy, dx = np.gradient(filled)
+            grad = np.sqrt(dx ** 2 + dy ** 2)
+            grad_da = xr.DataArray(grad, coords=da.coords, dims=da.dims, name="ssh_grad")
+            tmp = os.path.join(OUTPUT_DIR, "_tmp_ssh_grad.nc")
+            grad_da.to_netcdf(tmp)
+            out = load_and_crop_dataset(tmp, shp_path)
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            return out
+    except Exception as e:
+        record_error("خطا بارگذاری SSH برای نقشه", e)
+        return None
+
+
+
 def build_pfz_map(is_dark=False):
     """ساخت نقشه کامل PFZ با گرافیک ارتقایافته."""
     if not st.session_state.analysis_done or st.session_state.combined_region_gdf is None:
