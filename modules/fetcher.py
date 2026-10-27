@@ -54,21 +54,30 @@ def fetch_near_realtime_data(
         _write_fallback_sst(sst_nc_path, minx, miny, maxx, maxy)
 
     # --- 2. Chlorophyll-a ---
-    chl_content, _ = _erddap_download(
-        server="https://coastwatch.pfeg.noaa.gov/erddap/",
-        dataset_id="erdVHNchla8day",
-        minx=minx, miny=miny, maxx=maxx, maxy=maxy,
-        start_date=start_date, end_date=end_date,
-        is_chl=True, step_days=8,
-    )
+    # erdVHNchla8day اغلب برای این محدوده 404 می‌دهد؛ اول erdMH1chla1day
+    chl_content = _download_chlorophyll(minx, miny, maxx, maxy)
     if chl_content:
         with open(chl_nc_path, "wb") as f:
             f.write(chl_content)
         print("Chlorophyll-a data downloaded successfully.")
         fetched["chl"] = True
     else:
-        print("[Warning] Live Chlorophyll download failed. Generating spatial fallback...")
-        _write_fallback_chl(chl_nc_path, minx, miny, maxx, maxy)
+        # fallback قدیمی با altitude
+        chl_content, _ = _erddap_download(
+            server="https://coastwatch.pfeg.noaa.gov/erddap/",
+            dataset_id="erdVHNchla8day",
+            minx=minx, miny=miny, maxx=maxx, maxy=maxy,
+            start_date=start_date, end_date=end_date,
+            is_chl=True, step_days=8,
+        )
+        if chl_content:
+            with open(chl_nc_path, "wb") as f:
+                f.write(chl_content)
+            print("Chlorophyll-a downloaded via erdVHNchla8day fallback.")
+            fetched["chl"] = True
+        else:
+            print("[Warning] Live Chlorophyll download failed. Generating spatial fallback...")
+            _write_fallback_chl(chl_nc_path, minx, miny, maxx, maxy)
 
     # --- 3+4. Currents / SSH ---
     # بهترین منبع ترکیبی: nesdisSSH1day روی coastwatch.pfeg
@@ -198,6 +207,55 @@ def _download_blended_currents(minx, miny, maxx, maxy, out_path):
         except Exception as e:
             print(f"  error: {e}")
     return False
+
+
+
+def _download_chlorophyll(minx, miny, maxx, maxy):
+    """
+    دانلود کلروفیل از منابع پایدارتر.
+    اولویت: erdMH1chla1day (بدون altitude) با (last).
+    """
+    base = "https://coastwatch.pfeg.noaa.gov/erddap/griddap"
+    minx2, maxx2 = minx - 0.2, maxx + 0.2
+    miny2, maxy2 = miny - 0.2, maxy + 0.2
+    now = datetime.now(timezone.utc)
+
+    # (dataset, variable, has_altitude)
+    candidates = [
+        ("erdMH1chla1day", "chlorophyll", False),
+        ("erdMH1chla8day", "chlorophyll", False),
+        ("erdVH3chla8day", "chla", True),
+        ("erdVHNchla8day", "chla", True),
+        ("nesdisVHNchlaWeekly", "chlor_a", False),
+    ]
+
+    time_slices = ["[(last)]"]
+    for days_ago in (2, 5, 8, 12, 16, 24):
+        t = (now - timedelta(days=days_ago)).strftime("%Y-%m-%dT00:00:00Z")
+        time_slices.append(f"[({t})]")
+
+    for ds, var, has_alt in candidates:
+        for tslice in time_slices:
+            if has_alt:
+                url = (
+                    f"{base}/{ds}.nc?{var}{tslice}"
+                    f"[(0.0):(0.0)][({miny2}):({maxy2})][({minx2}):({maxx2})]"
+                )
+            else:
+                url = (
+                    f"{base}/{ds}.nc?{var}{tslice}"
+                    f"[({miny2}):({maxy2})][({minx2}):({maxx2})]"
+                )
+            print(f"Trying Chl {ds} {var} {tslice} ...")
+            try:
+                r = requests.get(url, timeout=90)
+                if r.status_code == 200 and len(r.content) > 2000:
+                    print(f"  Chl OK {ds} size={len(r.content)}")
+                    return r.content
+                print(f"  status={r.status_code} size={len(r.content)}")
+            except Exception as e:
+                print(f"  error: {e}")
+    return None
 
 
 def _erddap_download(

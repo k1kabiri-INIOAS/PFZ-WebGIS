@@ -162,7 +162,11 @@ def process_pfz_pipeline(
             list(ds_sst.data_vars.keys())[0],
         )
         chl_var = next(
-            (v for v in ds_chl.data_vars if "chl" in v.lower()),
+            (
+                v
+                for v in ds_chl.data_vars
+                if any(k in v.lower() for k in ("chl", "chlor"))
+            ),
             list(ds_chl.data_vars.keys())[0],
         )
 
