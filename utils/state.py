@@ -17,16 +17,14 @@ def init_session_defaults():
         st.session_state.error_logs = []
     if "process_logs" not in st.session_state:
         st.session_state.process_logs = []
-    if "current_nc_path" not in st.session_state:
-        st.session_state.current_nc_path = None
-    if "ssh_nc_path" not in st.session_state:
-        st.session_state.ssh_nc_path = None
     if "analysis_done" not in st.session_state:
         st.session_state.analysis_done = False
     for key in [
         "nc_out_list",
         "sst_nc_path",
         "chl_nc_path",
+        "current_nc_path",
+        "ssh_nc_path",
         "combined_fronts_gdf",
         "combined_region_gdf",
         "minx",
@@ -34,6 +32,7 @@ def init_session_defaults():
         "maxx",
         "maxy",
         "latest_date",
+        "model_options_used",
     ]:
         if key not in st.session_state:
             st.session_state[key] = None
@@ -56,6 +55,8 @@ def save_shared_state():
                 "nc_out_list": st.session_state.nc_out_list,
                 "sst_nc_path": st.session_state.sst_nc_path,
                 "chl_nc_path": st.session_state.chl_nc_path,
+                "current_nc_path": st.session_state.get("current_nc_path"),
+                "ssh_nc_path": st.session_state.get("ssh_nc_path"),
             },
             f,
             ensure_ascii=False,
@@ -75,6 +76,8 @@ def load_shared_state():
             st.session_state.nc_out_list = state.get("nc_out_list")
             st.session_state.sst_nc_path = state.get("sst_nc_path")
             st.session_state.chl_nc_path = state.get("chl_nc_path")
+            st.session_state.current_nc_path = state.get("current_nc_path")
+            st.session_state.ssh_nc_path = state.get("ssh_nc_path")
 
             st.session_state.combined_region_gdf = gpd.read_file(REGIONS_FILE)
             if os.path.exists(FRONTS_FILE):
