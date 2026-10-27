@@ -443,6 +443,31 @@ def _add_raster_overlay(m, da, label, reg_name, cmap_name, show=False):
 
 
 
+
+def _front_style_factory(color):
+    """استایل خطوط جبهه با هاله درخشان (دو لایه)."""
+
+    def core_style(feature):
+        return {
+            "color": color,
+            "weight": 2.8,
+            "opacity": 0.95,
+            "lineCap": "round",
+            "lineJoin": "round",
+        }
+
+    def halo_style(feature):
+        return {
+            "color": color,
+            "weight": 7,
+            "opacity": 0.28,
+            "lineCap": "round",
+            "lineJoin": "round",
+        }
+
+    return halo_style, core_style
+
+
 def build_pfz_map(is_dark=False):
     """ساخت نقشه کامل PFZ با گرافیک ارتقایافته."""
     if not st.session_state.analysis_done or st.session_state.combined_region_gdf is None:
