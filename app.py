@@ -229,11 +229,21 @@ if st.session_state.role == "admin":
                                 )
                             except Exception as proc_ex:
                                 record_error(f"خطا در مدل منطقه {reg_name}", proc_ex)
+                                log_process(
+                                    "error",
+                                    f"✗ پردازش {reg_name} شکست خورد: {proc_ex}",
+                                    status,
+                                )
                                 nc_out = None
 
                             if nc_out and os.path.exists(nc_out):
                                 nc_out_list.append(
                                     (reg_name, nc_out, cfg["shp_path"])
+                                )
+                                log_process(
+                                    "success",
+                                    f"✓ شاخص PFZ برای {reg_name} ساخته شد.",
+                                    status,
                                 )
                                 reg_fronts_gdf = generate_fronts_fallback(
                                     nc_out,
@@ -242,13 +252,25 @@ if st.session_state.role == "admin":
                                     sst_nc_path=sst_nc_path,
                                     region_shp_path=cfg["shp_path"],
                                 )
-                                if reg_fronts_gdf is not None:
+                                if reg_fronts_gdf is not None and not reg_fronts_gdf.empty:
                                     all_front_gdfs.append(reg_fronts_gdf)
                                     log_process(
                                         "success",
-                                        f"جبهه‌های منطقه {reg_name} استخراج گردید.",
+                                        f"✓ جبهه‌های {reg_name}: {len(reg_fronts_gdf)} قطعه.",
                                         status,
                                     )
+                                else:
+                                    log_process(
+                                        "error",
+                                        f"✗ جبهه‌ای برای {reg_name} استخراج نشد (آستانه را کم کنید).",
+                                        status,
+                                    )
+                            else:
+                                log_process(
+                                    "error",
+                                    f"✗ فایل خروجی PFZ برای {reg_name} ساخته نشد.",
+                                    status,
+                                )
 
                         st.session_state.combined_fronts_gdf = (
                             pd.concat(all_front_gdfs, ignore_index=True)
