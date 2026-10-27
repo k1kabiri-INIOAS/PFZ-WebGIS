@@ -349,6 +349,23 @@ if st.session_state.analysis_done and st.session_state.combined_region_gdf is no
                 returned_objects=[],
                 use_container_width=True,
             )
+            # وضعیت لایه‌های اختیاری برای ادمین
+            if st.session_state.role == "admin":
+                ov = st.session_state.get("_overlay_status")
+                if ov is not None:
+                    with st.expander("🔎 وضعیت لایه‌های جریان / SSH / SST / Chl", expanded=True):
+                        st.write(
+                            f"Current فایل: {'✓ موجود' if ov.get('current_exists') else '✗ نیست'} | "
+                            f"SSH فایل: {'✓ موجود' if ov.get('ssh_exists') else '✗ نیست'} | "
+                            f"SST: {'✓' if ov.get('sst_exists') else '✗'} | "
+                            f"Chl: {'✓' if ov.get('chl_exists') else '✗'}"
+                        )
+                        added = ov.get("added") or []
+                        st.write("لایه‌های اضافه‌شده به کنترل نقشه:", ", ".join(added) if added else "هیچکدام")
+                        if not added:
+                            st.warning(
+                                "لایهٔ اختیاری ساخته نشد. یک‌بار با Current و SSH روشن دوباره تحلیل را اجرا کنید."
+                            )
         else:
             st.warning("نقشه قابل ساخت نبود. وضعیت تحلیل را بررسی کنید.")
     except Exception as map_render_err:
