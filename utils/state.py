@@ -17,6 +17,10 @@ def init_session_defaults():
         st.session_state.error_logs = []
     if "process_logs" not in st.session_state:
         st.session_state.process_logs = []
+    if "current_nc_path" not in st.session_state:
+        st.session_state.current_nc_path = None
+    if "ssh_nc_path" not in st.session_state:
+        st.session_state.ssh_nc_path = None
     if "analysis_done" not in st.session_state:
         st.session_state.analysis_done = False
     for key in [
