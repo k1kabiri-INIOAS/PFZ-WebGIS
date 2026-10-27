@@ -242,34 +242,66 @@ def _add_date_badge(m, is_dark: bool):
     m.get_root().html.add_child(Element(html))
 
 
+def _crop_da_to_shp(da, shp_path):
+    """برش DataArray به حدود shapefile منطقه."""
+    try:
+        gdf = gpd.read_file(shp_path).to_crs("EPSG:4326")
+        minx, miny, maxx, maxy = gdf.total_bounds
+        lat_name = next((d for d in da.dims if d.lower() in ("lat", "latitude", "y")), None)
+        lon_name = next((d for d in da.dims if d.lower() in ("lon", "longitude", "x")), None)
+        if not lat_name or not lon_name:
+            return da
+        da = da.sortby(lat_name).sortby(lon_name)
+        # lat ممکن است نزولی باشد
+        lat_vals = da[lat_name].values
+        if len(lat_vals) > 1 and lat_vals[0] > lat_vals[-1]:
+            return da.sel(
+                {
+                    lat_name: slice(maxy + 0.1, miny - 0.1),
+                    lon_name: slice(minx - 0.1, maxx + 0.1),
+                }
+            )
+        return da.sel(
+            {
+                lat_name: slice(miny - 0.1, maxy + 0.1),
+                lon_name: slice(minx - 0.1, maxx + 0.1),
+            }
+        )
+    except Exception as e:
+        record_error("خطا در برش لایه به منطقه", e)
+        return da
+
+
 def _da_from_current_nc(nc_path, shp_path):
-    """سرعت جریان |V| از فایل ugos/vgos یا u_current/v_current."""
+    """سرعت جریان |V| از ugos/vgos یا u_current/v_current."""
     if not nc_path or not os.path.exists(nc_path):
         return None
     try:
         with xr.open_dataset(nc_path) as ds:
-            names = {v.lower(): v for v in ds.data_vars}
+            names = {str(v).lower(): v for v in ds.data_vars}
             u_var = next((names[k] for k in ("ugos", "u_current", "uo", "u") if k in names), None)
             v_var = next((names[k] for k in ("vgos", "v_current", "vo", "v") if k in names), None)
             if u_var is None or v_var is None:
                 return None
-            u = ds[u_var].squeeze()
-            v = ds[v_var].squeeze()
+            u = ds[u_var].load().squeeze()
+            v = ds[v_var].load().squeeze()
             while u.ndim > 2:
                 u = u.isel({u.dims[0]: 0})
             while v.ndim > 2:
                 v = v.isel({v.dims[0]: 0})
             speed = (u.astype("float64") ** 2 + v.astype("float64") ** 2) ** 0.5
             speed.name = "current_speed"
-            # crop via existing helper by writing temp — or reuse load path
-            tmp = os.path.join(OUTPUT_DIR, "_tmp_current_speed.nc")
-            speed.to_netcdf(tmp)
-            da = load_and_crop_dataset(tmp, shp_path)
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
-            return da
+            # یکسان‌سازی نام ابعاد
+            rename = {}
+            for d in speed.dims:
+                dl = d.lower()
+                if dl in ("longitude", "x") and d != "lon":
+                    rename[d] = "lon"
+                if dl in ("latitude", "y") and d != "lat":
+                    rename[d] = "lat"
+            if rename:
+                speed = speed.rename(rename)
+            return _crop_da_to_shp(speed, shp_path)
     except Exception as e:
         record_error("خطا بارگذاری جریان برای نقشه", e)
         return None
@@ -280,22 +312,31 @@ def _da_from_ssh_nc(nc_path, shp_path):
     if not nc_path or not os.path.exists(nc_path):
         return None
     try:
+        import numpy as np
         with xr.open_dataset(nc_path) as ds:
             ssh_var = next(
                 (
                     v
                     for v in ds.data_vars
-                    if any(k in v.lower() for k in ("sla", "ssh", "adt", "height", "anomaly"))
+                    if any(k in str(v).lower() for k in ("sla", "ssh", "adt", "height", "anomaly"))
                 ),
                 None,
             )
             if ssh_var is None:
                 return None
-            da = ds[ssh_var].squeeze()
+            da = ds[ssh_var].load().squeeze()
             while da.ndim > 2:
                 da = da.isel({da.dims[0]: 0})
-            vals = da.astype("float64").values
-            import numpy as np
+            rename = {}
+            for d in da.dims:
+                dl = d.lower()
+                if dl in ("longitude", "x") and d != "lon":
+                    rename[d] = "lon"
+                if dl in ("latitude", "y") and d != "lat":
+                    rename[d] = "lat"
+            if rename:
+                da = da.rename(rename)
+            vals = np.asarray(da.values, dtype=float)
             finite = np.isfinite(vals)
             if not finite.any():
                 return None
@@ -304,14 +345,7 @@ def _da_from_ssh_nc(nc_path, shp_path):
             dy, dx = np.gradient(filled)
             grad = np.sqrt(dx ** 2 + dy ** 2)
             grad_da = xr.DataArray(grad, coords=da.coords, dims=da.dims, name="ssh_grad")
-            tmp = os.path.join(OUTPUT_DIR, "_tmp_ssh_grad.nc")
-            grad_da.to_netcdf(tmp)
-            out = load_and_crop_dataset(tmp, shp_path)
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
-            return out
+            return _crop_da_to_shp(grad_da, shp_path)
     except Exception as e:
         record_error("خطا بارگذاری SSH برای نقشه", e)
         return None
