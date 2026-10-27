@@ -183,39 +183,116 @@ def _front_style_factory(color):
     return halo_style, core_style
 
 
-def _add_gradient_legend(m, is_dark: bool):
-    """Legend گرادیانی افقی برای PFZ."""
+def _legend_box(
+    title,
+    gradient,
+    low_label,
+    mid_label,
+    high_label,
+    bottom_px,
+    is_dark,
+    border_color=None,
+    extra_html="",
+):
     bg = "rgba(15, 23, 42, 0.92)" if is_dark else "rgba(255, 255, 255, 0.95)"
     fg = "#f1f5f9" if is_dark else "#0f172a"
     muted = "#94a3b8" if is_dark else "#475569"
-    border = "#38bdf8" if is_dark else "#0284c7"
-
-    # گرادیان مطابق colormap جدید
-    gradient = "linear-gradient(90deg, #0B1D36 0%, #0D3B66 12%, #1A6B9A 25%, #1B9E77 40%, #5CB85C 55%, #E6C229 70%, #F4A261 85%, #9B2226 100%)"
-
-    html = f"""
-    <div style="position:fixed; bottom:90px; left:18px; z-index:9999;
+    border = border_color or ("#38bdf8" if is_dark else "#0284c7")
+    return f"""
+    <div style="position:fixed; bottom:{bottom_px}px; left:18px; z-index:9999;
                 background:{bg}; border:1.5px solid {border}; border-radius:12px;
                 padding:10px 12px; width:220px;
-                box-shadow:0 8px 24px rgba(0,0,0,0.25);
+                box-shadow:0 6px 20px rgba(0,0,0,0.25);
                 font-family:'Vazirmatn', system-ui, sans-serif; direction:rtl; color:{fg};">
-      <div style="text-align:center; font-weight:800; font-size:12px; margin-bottom:8px; letter-spacing:0.3px;">
-        🎯 پتانسیل صید (PFZ)
+      <div style="text-align:center; font-weight:800; font-size:12px; margin-bottom:8px;">
+        {title}
       </div>
       <div style="height:14px; border-radius:7px; background:{gradient};
-                  border:1px solid rgba(255,255,255,0.2); box-shadow:inset 0 1px 2px rgba(0,0,0,0.2);"></div>
+                  border:1px solid rgba(255,255,255,0.2);"></div>
       <div style="display:flex; justify-content:space-between; margin-top:5px; font-size:10px; color:{muted}; font-weight:600; direction:ltr;">
-        <span>بسیار کم</span>
-        <span>متوسط</span>
-        <span>عالی</span>
+        <span>{low_label}</span>
+        <span>{mid_label}</span>
+        <span>{high_label}</span>
       </div>
+      {extra_html}
+    </div>
+    """
+
+
+def _add_gradient_legend(m, is_dark: bool, show_current=False, show_ssh=False):
+    """لجند PFZ + اختیاری جریان و SSH (جدا)."""
+    muted = "#94a3b8" if is_dark else "#475569"
+    pfz_grad = (
+        "linear-gradient(90deg, #0B1D36 0%, #0D3B66 12%, #1A6B9A 25%, #1B9E77 40%, "
+        "#5CB85C 55%, #E6C229 70%, #F4A261 85%, #9B2226 100%)"
+    )
+    cur_grad = (
+        "linear-gradient(90deg, #0B132B 0%, #1C2541 16%, #3A506B 33%, "
+        "#5BC0BE 50%, #6FFFE9 66%, #F0F3BD 83%, #F4D35E 100%)"
+    )
+    ssh_grad = (
+        "linear-gradient(90deg, #1A0A2E 0%, #2D1B4E 16%, #5B2C6F 33%, "
+        "#9B59B6 50%, #E8A0BF 66%, #F7DC6F 83%, #FCF3CF 100%)"
+    )
+
+    front_note = f"""
       <div style="margin-top:8px; padding-top:6px; border-top:1px solid rgba(148,163,184,0.35); font-size:10px; color:{muted};">
         <span style="display:inline-block;width:18px;height:3px;background:#FF1744;border-radius:2px;vertical-align:middle;margin-left:6px;box-shadow:0 0 6px #FF1744;"></span>
         خطوط جبهه صیادی
       </div>
-    </div>
     """
-    m.get_root().html.add_child(Element(html))
+
+    # از پایین به بالا: PFZ → جریان → SSH
+    m.get_root().html.add_child(
+        Element(
+            _legend_box(
+                "🎯 پتانسیل صید (PFZ)",
+                pfz_grad,
+                "بسیار کم",
+                "متوسط",
+                "عالی",
+                90,
+                is_dark,
+                border_color="#38bdf8" if is_dark else "#0284c7",
+                extra_html=front_note,
+            )
+        )
+    )
+
+    bottom = 200
+    if show_current:
+        m.get_root().html.add_child(
+            Element(
+                _legend_box(
+                    "🌀 سرعت جریان",
+                    cur_grad,
+                    "ضعیف",
+                    "متوسط",
+                    "قوی",
+                    bottom,
+                    is_dark,
+                    border_color="#5BC0BE",
+                )
+            )
+        )
+        bottom += 100
+
+    if show_ssh:
+        m.get_root().html.add_child(
+            Element(
+                _legend_box(
+                    "📶 گرادیان SSH",
+                    ssh_grad,
+                    "کم",
+                    "متوسط",
+                    "زیاد",
+                    bottom,
+                    is_dark,
+                    border_color="#9B59B6",
+                )
+            )
+        )
+
 
 
 def _add_date_badge(m, is_dark: bool):
@@ -713,7 +790,14 @@ def build_pfz_map(is_dark=False):
         ).add_to(regions_fg)
         regions_fg.add_to(m)
 
-    _add_gradient_legend(m, is_dark)
+    ov = st.session_state.get("_overlay_status") or {}
+    added = set(ov.get("added") or [])
+    _add_gradient_legend(
+        m,
+        is_dark,
+        show_current=("جریان" in added),
+        show_ssh=("SSH" in added),
+    )
     _add_date_badge(m, is_dark)
 
     m.fit_bounds(
