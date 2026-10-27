@@ -184,6 +184,7 @@ def _front_style_factory(color):
 
 
 def _legend_box(
+    legend_id,
     title,
     gradient,
     low_label,
@@ -193,13 +194,15 @@ def _legend_box(
     is_dark,
     border_color=None,
     extra_html="",
+    initially_visible=False,
 ):
     bg = "rgba(15, 23, 42, 0.92)" if is_dark else "rgba(255, 255, 255, 0.95)"
     fg = "#f1f5f9" if is_dark else "#0f172a"
     muted = "#94a3b8" if is_dark else "#475569"
     border = border_color or ("#38bdf8" if is_dark else "#0284c7")
+    display = "block" if initially_visible else "none"
     return f"""
-    <div style="position:fixed; bottom:{bottom_px}px; left:18px; z-index:9999;
+    <div id="{legend_id}" style="display:{display}; position:fixed; bottom:{bottom_px}px; left:18px; z-index:9999;
                 background:{bg}; border:1.5px solid {border}; border-radius:12px;
                 padding:10px 12px; width:220px;
                 box-shadow:0 6px 20px rgba(0,0,0,0.25);
@@ -219,21 +222,36 @@ def _legend_box(
     """
 
 
-def _add_gradient_legend(m, is_dark: bool, show_current=False, show_ssh=False):
-    """لجند PFZ + اختیاری جریان و SSH (جدا)."""
+def _add_gradient_legend(m, is_dark: bool, available=None):
+    """
+    لجندها همیشه در DOM هستند ولی فقط وقتی لایهٔ متناظر روشن باشد دیده می‌شوند.
+    available: set از کلیدهای موجود مثل {'current','ssh','sst','chl','pfz'}
+    """
+    available = available or {"pfz"}
     muted = "#94a3b8" if is_dark else "#475569"
-    pfz_grad = (
-        "linear-gradient(90deg, #0B1D36 0%, #0D3B66 12%, #1A6B9A 25%, #1B9E77 40%, "
-        "#5CB85C 55%, #E6C229 70%, #F4A261 85%, #9B2226 100%)"
-    )
-    cur_grad = (
-        "linear-gradient(90deg, #0B132B 0%, #1C2541 16%, #3A506B 33%, "
-        "#5BC0BE 50%, #6FFFE9 66%, #F0F3BD 83%, #F4D35E 100%)"
-    )
-    ssh_grad = (
-        "linear-gradient(90deg, #1A0A2E 0%, #2D1B4E 16%, #5B2C6F 33%, "
-        "#9B59B6 50%, #E8A0BF 66%, #F7DC6F 83%, #FCF3CF 100%)"
-    )
+
+    grads = {
+        "pfz": (
+            "linear-gradient(90deg, #0B1D36 0%, #0D3B66 12%, #1A6B9A 25%, #1B9E77 40%, "
+            "#5CB85C 55%, #E6C229 70%, #F4A261 85%, #9B2226 100%)"
+        ),
+        "current": (
+            "linear-gradient(90deg, #0B132B 0%, #1C2541 16%, #3A506B 33%, "
+            "#5BC0BE 50%, #6FFFE9 66%, #F0F3BD 83%, #F4D35E 100%)"
+        ),
+        "ssh": (
+            "linear-gradient(90deg, #1A0A2E 0%, #2D1B4E 16%, #5B2C6F 33%, "
+            "#9B59B6 50%, #E8A0BF 66%, #F7DC6F 83%, #FCF3CF 100%)"
+        ),
+        "sst": (
+            "linear-gradient(90deg, #023E8A 0%, #0077B6 14%, #00B4D8 28%, #90E0EF 42%, "
+            "#CAF0F8 56%, #FEEAAB 70%, #F4A261 84%, #9B2226 100%)"
+        ),
+        "chl": (
+            "linear-gradient(90deg, #0D1B0F 0%, #1B4332 16%, #2D6A4F 33%, "
+            "#40916C 50%, #52B788 66%, #95D5B2 83%, #F0FFF0 100%)"
+        ),
+    }
 
     front_note = f"""
       <div style="margin-top:8px; padding-top:6px; border-top:1px solid rgba(148,163,184,0.35); font-size:10px; color:{muted};">
@@ -242,56 +260,172 @@ def _add_gradient_legend(m, is_dark: bool, show_current=False, show_ssh=False):
       </div>
     """
 
-    # از پایین به بالا: PFZ → جریان → SSH
-    m.get_root().html.add_child(
-        Element(
-            _legend_box(
+    # موقعیت‌های ثابت (از پایین) — با JS جابه‌جا نمی‌شوند؛ فقط show/hide
+    specs = []
+    if "pfz" in available:
+        specs.append(
+            (
+                "legend-pfz",
                 "🎯 پتانسیل صید (PFZ)",
-                pfz_grad,
+                grads["pfz"],
                 "بسیار کم",
                 "متوسط",
                 "عالی",
                 90,
-                is_dark,
-                border_color="#38bdf8" if is_dark else "#0284c7",
-                extra_html=front_note,
+                "#38bdf8" if is_dark else "#0284c7",
+                front_note,
+                True,  # PFZ نزدیک جبهه معمولاً پیش‌فرض روشن است
             )
         )
-    )
-
     bottom = 200
-    if show_current:
-        m.get_root().html.add_child(
-            Element(
-                _legend_box(
-                    "🌀 سرعت جریان",
-                    cur_grad,
-                    "ضعیف",
-                    "متوسط",
-                    "قوی",
-                    bottom,
-                    is_dark,
-                    border_color="#5BC0BE",
-                )
+    for key, title, labels, border, init in [
+        ("current", "🌀 سرعت جریان", ("ضعیف", "متوسط", "قوی"), "#5BC0BE", False),
+        ("ssh", "📶 گرادیان SSH", ("کم", "متوسط", "زیاد"), "#9B59B6", False),
+        ("sst", "🌡️ دمای سطح آب (SST)", ("سرد", "متوسط", "گرم"), "#00B4D8", False),
+        ("chl", "🌿 کلروفیل-آ", ("کم", "متوسط", "زیاد"), "#40916C", False),
+    ]:
+        if key not in available:
+            continue
+        specs.append(
+            (
+                f"legend-{key}",
+                title,
+                grads[key],
+                labels[0],
+                labels[1],
+                labels[2],
+                bottom,
+                border,
+                "",
+                init,
             )
         )
         bottom += 100
 
-    if show_ssh:
+    for lid, title, grad, lo, mid, hi, bot, border, extra, init in specs:
         m.get_root().html.add_child(
             Element(
                 _legend_box(
-                    "📶 گرادیان SSH",
-                    ssh_grad,
-                    "کم",
-                    "متوسط",
-                    "زیاد",
-                    bottom,
-                    is_dark,
-                    border_color="#9B59B6",
+                    lid, title, grad, lo, mid, hi, bot, is_dark, border, extra, init
                 )
             )
         )
+
+    # JS: نمایش/مخفی‌سازی لجند با روشن/خاموش شدن لایه
+    # نام لایه‌ها باید با overlay name در ImageOverlay/FeatureGroup هم‌خوان باشد
+    js = """
+    <script>
+    (function() {
+      function findMap() {
+        for (var k in window) {
+          try {
+            if (window[k] && window[k] instanceof L.Map) return window[k];
+          } catch (e) {}
+        }
+        return null;
+      }
+
+      function layerKey(name) {
+        if (!name) return null;
+        var n = String(name);
+        if (n.indexOf('پتانسیل') >= 0 || n.indexOf('پهنه‌بندی') >= 0 || n.indexOf('PFZ') >= 0) return 'pfz';
+        if (n.indexOf('جریان') >= 0 || n.toLowerCase().indexOf('current') >= 0) return 'current';
+        if (n.indexOf('SSH') >= 0 || n.indexOf('گرادیان') >= 0) return 'ssh';
+        if (n.indexOf('SST') >= 0 || n.indexOf('دما') >= 0) return 'sst';
+        if (n.indexOf('Chlorophyll') >= 0 || n.indexOf('کلروفیل') >= 0 || n.indexOf('Chl') >= 0) return 'chl';
+        if (n.indexOf('جبهه صیادی') >= 0) return 'fronts';
+        return null;
+      }
+
+      var active = {pfz: false, current: false, ssh: false, sst: false, chl: false};
+
+      function refreshLegends() {
+        ['pfz','current','ssh','sst','chl'].forEach(function(k) {
+          var el = document.getElementById('legend-' + k);
+          if (!el) return;
+          el.style.display = active[k] ? 'block' : 'none';
+        });
+        // چیدمان عمودی مجدد تا جای خالی نماند
+        var order = ['pfz','current','ssh','sst','chl'];
+        var y = 90;
+        order.forEach(function(k) {
+          var el = document.getElementById('legend-' + k);
+          if (!el || el.style.display === 'none') return;
+          el.style.bottom = y + 'px';
+          y += 100;
+        });
+      }
+
+      function bind(map) {
+        // وضعیت اولیه از لایه‌های روشن
+        map.eachLayer(function(layer) {
+          var name = layer.options && layer.options.name;
+          // FeatureGroup / ImageOverlay
+          if (!name && layer.eachLayer) {
+            // skip
+          }
+        });
+        // Layer Control overlays: listen add/remove
+        map.on('overlayadd', function(e) {
+          var k = layerKey(e.name);
+          if (k && k !== 'fronts') { active[k] = true; refreshLegends(); }
+        });
+        map.on('overlayremove', function(e) {
+          var k = layerKey(e.name);
+          if (!k || k === 'fronts') return;
+          // اگر چند لایه PFZ داریم، فقط وقتی همه خاموش شدند لجند را ببند
+          if (k === 'pfz') {
+            var any = false;
+            // بررسی checkboxهای layer control
+            try {
+              var labels = document.querySelectorAll('.leaflet-control-layers-overlays label');
+              labels.forEach(function(lab) {
+                var t = lab.textContent || '';
+                var cb = lab.querySelector('input');
+                if (cb && cb.checked && (t.indexOf('پتانسیل') >= 0 || t.indexOf('پهنه‌بندی') >= 0 || t.indexOf('PFZ') >= 0)) {
+                  any = true;
+                }
+              });
+            } catch (err) {}
+            active.pfz = any;
+          } else {
+            active[k] = false;
+          }
+          refreshLegends();
+        });
+
+        // همگام‌سازی اولیه با checkboxهای روشن
+        setTimeout(function() {
+          try {
+            var labels = document.querySelectorAll('.leaflet-control-layers-overlays label');
+            active = {pfz: false, current: false, ssh: false, sst: false, chl: false};
+            labels.forEach(function(lab) {
+              var t = lab.textContent || '';
+              var cb = lab.querySelector('input');
+              if (!cb || !cb.checked) return;
+              var k = layerKey(t);
+              if (k && k !== 'fronts') active[k] = true;
+            });
+            refreshLegends();
+          } catch (err) {}
+        }, 400);
+      }
+
+      var tries = 0;
+      var timer = setInterval(function() {
+        var map = findMap();
+        tries++;
+        if (map) {
+          clearInterval(timer);
+          bind(map);
+        } else if (tries > 40) {
+          clearInterval(timer);
+        }
+      }, 250);
+    })();
+    </script>
+    """
+    m.get_root().html.add_child(Element(js))
 
 
 
@@ -792,12 +926,16 @@ def build_pfz_map(is_dark=False):
 
     ov = st.session_state.get("_overlay_status") or {}
     added = set(ov.get("added") or [])
-    _add_gradient_legend(
-        m,
-        is_dark,
-        show_current=("جریان" in added),
-        show_ssh=("SSH" in added),
-    )
+    available = {"pfz"}
+    if "جریان" in added:
+        available.add("current")
+    if "SSH" in added:
+        available.add("ssh")
+    if "SST" in added:
+        available.add("sst")
+    if "Chl" in added:
+        available.add("chl")
+    _add_gradient_legend(m, is_dark, available=available)
     _add_date_badge(m, is_dark)
 
     m.fit_bounds(
