@@ -53,6 +53,30 @@ _CHL_COLORS = [
 ]
 CHL_CMAP = LinearSegmentedColormap.from_list("chl_green", _CHL_COLORS, N=256)
 
+# Current speed: تیره → فیروزه‌ای → زرد
+_CUR_COLORS = [
+    "#0B132B",
+    "#1C2541",
+    "#3A506B",
+    "#5BC0BE",
+    "#6FFFE9",
+    "#F0F3BD",
+    "#F4D35E",
+]
+CURRENT_CMAP = LinearSegmentedColormap.from_list("current_speed", _CUR_COLORS, N=256)
+
+# SSH gradient: بنفش تیره → صورتی → زرد
+_SSH_COLORS = [
+    "#1A0A2E",
+    "#2D1B4E",
+    "#5B2C6F",
+    "#9B59B6",
+    "#E8A0BF",
+    "#F7DC6F",
+    "#FCF3CF",
+]
+SSH_CMAP = LinearSegmentedColormap.from_list("ssh_grad", _SSH_COLORS, N=256)
+
 CMAP_REGISTRY = {
     "pfz": PFZ_CMAP,
     "pfz_ocean": PFZ_CMAP,
@@ -61,6 +85,8 @@ CMAP_REGISTRY = {
     "RdYlBu_r": SST_CMAP,
     "chl": CHL_CMAP,
     "YlGn": CHL_CMAP,
+    "current": CURRENT_CMAP,
+    "ssh": SSH_CMAP,
 }
 
 
